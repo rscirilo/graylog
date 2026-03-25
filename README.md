@@ -9,8 +9,7 @@ Dê permissão de execução: chmod +x install_graylog.sh
 
 Execute: sudo ./install_graylog.sh
 
-⚠️ Notas de Engenheiro Sênior:
-Arquitetura: O Graylog funciona como um agregador. Certifique-se de que as portas 9000 (Web/API) e as portas de entrada de logs (ex: 1514 Syslog, 12201 GELF) estejam liberadas no seu firewall (ufw ou iptables).
+⚠️ Arquitetura: O Graylog funciona como um agregador. Certifique-se de que as portas 9000 (Web/API) e as portas de entrada de logs (ex: 1514 Syslog, 12201 GELF) estejam liberadas no seu firewall (ufw ou iptables).
 
 Recursos: O OpenSearch e o Graylog são baseados em Java. Para um ambiente de produção, você deve ter no mínimo 4GB de RAM, caso contrário, o serviço pode sofrer "OOM Kill" (Out of Memory).
 
