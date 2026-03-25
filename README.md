@@ -15,3 +15,15 @@ Arquitetura: O Graylog funciona como um agregador. Certifique-se de que as porta
 Recursos: O OpenSearch e o Graylog são baseados em Java. Para um ambiente de produção, você deve ter no mínimo 4GB de RAM, caso contrário, o serviço pode sofrer "OOM Kill" (Out of Memory).
 
 Ajuste de JVM: Se o servidor tiver pouca memória, edite /etc/default/graylog-server e ajuste os parâmetros -Xms e -Xmx.
+
+## 🛠️ O Script de Instalação Automatizada
+
+Este script faz o seguinte:
+
+Instala as dependências base.
+
+Configura o MongoDB 6.0+.
+
+Instala o OpenSearch 2.x (sucessor recomendado para o Graylog).
+
+Instala o Graylog 6.x (versão atual).
