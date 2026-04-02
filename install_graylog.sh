@@ -86,7 +86,10 @@ install_base_packages() {
     procps \
     net-tools \
     python3 \
-    tar
+    tar \
+    sed \
+    coreutils \
+    findutils
 
   log "Pré-requisitos instalados com sucesso."
 }
@@ -114,15 +117,19 @@ PY
   wget -O "${TEMURIN_ARCHIVE}" "${TEMURIN_URL}"
 
   log "Limpando instalacao anterior do Temurin em ${JAVA_DIR}..."
-  find "${JAVA_DIR}" -mindepth 1 -maxdepth 1 ! -name 'current' -exec rm -rf {} + || true
-  rm -f "${TEMURIN_CURRENT}"
+  find "${JAVA_DIR}" -mindepth 1 -maxdepth 1 -exec rm -rf {} + || true
 
   log "Extraindo Temurin 17..."
-  EXTRACTED_DIR="$(tar -tzf "${TEMURIN_ARCHIVE}" | head -1 | cut -d/ -f1)"
+  tar -xzf "${TEMURIN_ARCHIVE}" -C "${JAVA_DIR}"
+
+  EXTRACTED_DIR="$(tar -tzf "${TEMURIN_ARCHIVE}" | sed -n '1p' | cut -d/ -f1)"
   [[ -n "${EXTRACTED_DIR}" ]] || die "Nao foi possivel identificar o diretorio interno do arquivo tar.gz."
 
-  tar -xzf "${TEMURIN_ARCHIVE}" -C "${JAVA_DIR}"
   ln -sfn "${JAVA_DIR}/${EXTRACTED_DIR}" "${TEMURIN_CURRENT}"
+
+  if [[ ! -x "${TEMURIN_CURRENT}/bin/java" ]]; then
+    die "Java do Temurin nao encontrado em ${TEMURIN_CURRENT}/bin/java"
+  fi
 
   log "Criando profile JAVA_HOME em ${PROFILE_FILE}..."
   cat > "${PROFILE_FILE}" <<EOF
@@ -132,6 +139,7 @@ EOF
   chmod 644 "${PROFILE_FILE}"
 
   log "Apontando /usr/local/bin/java para o Temurin 17..."
+  mkdir -p /usr/local/bin
   ln -sfn "${TEMURIN_CURRENT}/bin/java" /usr/local/bin/java
   hash -r 2>/dev/null || true
 
