@@ -31,6 +31,24 @@ MONGO_CONF_FILE="${MONGO_ETC_DIR}/mongod.conf"
 PROFILE_FILE_MONGO="/etc/profile.d/mongodb44-graylog.sh"
 MONGO_SERVICE_FILE="/etc/systemd/system/mongod-graylog.service"
 
+OPENSEARCH_VERSION="1.3.14"
+OPENSEARCH_FILE="opensearch-${OPENSEARCH_VERSION}-linux-x64.tar.gz"
+OPENSEARCH_URL="https://artifacts.opensearch.org/releases/bundle/opensearch/${OPENSEARCH_VERSION}/${OPENSEARCH_FILE}"
+OPENSEARCH_ARCHIVE="${DOWNLOAD_DIR}/${OPENSEARCH_FILE}"
+OPENSEARCH_BASE_DIR="${BASE_DIR}/opensearch"
+OPENSEARCH_HOME="${OPENSEARCH_BASE_DIR}/${OPENSEARCH_VERSION}"
+OPENSEARCH_CURRENT="${OPENSEARCH_BASE_DIR}/current"
+OPENSEARCH_DATA_DIR="${BASE_DIR}/data/opensearch"
+OPENSEARCH_LOG_DIR="${BASE_DIR}/log/opensearch"
+OPENSEARCH_RUN_DIR="${BASE_DIR}/run/opensearch"
+OPENSEARCH_TMP_DIR="${BASE_DIR}/tmp/opensearch"
+OPENSEARCH_CONF_DIR="${OPENSEARCH_CURRENT}/config"
+OPENSEARCH_YML="${OPENSEARCH_CONF_DIR}/opensearch.yml"
+OPENSEARCH_JVM_DIR="${OPENSEARCH_CONF_DIR}/jvm.options.d"
+OPENSEARCH_HEAP_FILE="${OPENSEARCH_JVM_DIR}/heap.options"
+OPENSEARCH_SERVICE_FILE="/etc/systemd/system/opensearch-graylog.service"
+OPENSEARCH_SYSCTL_FILE="/etc/sysctl.d/99-graylog-opensearch.conf"
+
 LEGACY_MONGO_LIST="/etc/apt/sources.list.d/mongodb-org-4.4.list"
 LEGACY_MONGO_KEYRING="/usr/share/keyrings/mongodb-server-4.4.gpg"
 
@@ -88,8 +106,8 @@ precheck() {
     log "CPU sem AVX confirmada."
   fi
 
-  mkdir -p "${BASE_DIR}"/{data,journal,log,tmp,config,downloads,java,mongodb,run}
-  chmod 755 "${BASE_DIR}" "${BASE_DIR}"/{data,journal,log,tmp,config,downloads,java,mongodb,run}
+  mkdir -p "${BASE_DIR}"/{data,journal,log,tmp,config,downloads,java,mongodb,opensearch,run}
+  chmod 755 "${BASE_DIR}" "${BASE_DIR}"/{data,journal,log,tmp,config,downloads,java,mongodb,opensearch,run}
 
   log "Sistema operacional confirmado: ${PRETTY_NAME:-Debian}"
   df -h /srv || true
@@ -134,7 +152,8 @@ install_base_packages() {
     liblzma5 \
     libc6 \
     libgcc-s1 \
-    libstdc++6
+    libstdc++6 \
+    util-linux
 
   log "Pré-requisitos instalados com sucesso."
 }
@@ -341,6 +360,131 @@ EOF
   log "MongoDB ${MONGO_VERSION} instalado por tarball em /srv."
 }
 
+configure_opensearch_kernel() {
+  log "Aplicando ajuste de kernel para OpenSearch..."
+  cat > "${OPENSEARCH_SYSCTL_FILE}" <<EOF
+vm.max_map_count = 262144
+EOF
+  sysctl --system >/dev/null
+  log "Kernel ajustado para OpenSearch."
+}
+
+install_opensearch13_tarball() {
+  log "Preparando diretorios do OpenSearch em /srv..."
+  mkdir -p "${OPENSEARCH_BASE_DIR}" "${OPENSEARCH_DATA_DIR}" "${OPENSEARCH_LOG_DIR}" "${OPENSEARCH_RUN_DIR}" "${OPENSEARCH_TMP_DIR}"
+
+  if ! id -u opensearch >/dev/null 2>&1; then
+    log "Criando usuario de sistema opensearch..."
+    useradd --system --home-dir "${OPENSEARCH_BASE_DIR}" --shell /usr/sbin/nologin opensearch
+  fi
+
+  log "Baixando OpenSearch ${OPENSEARCH_VERSION} por tarball..."
+  wget -O "${OPENSEARCH_ARCHIVE}" "${OPENSEARCH_URL}"
+
+  log "Limpando instalacao anterior do OpenSearch em ${OPENSEARCH_HOME}..."
+  rm -rf "${OPENSEARCH_HOME}"
+  mkdir -p "${OPENSEARCH_HOME}"
+
+  log "Extraindo OpenSearch em ${OPENSEARCH_HOME}..."
+  tar -xzf "${OPENSEARCH_ARCHIVE}" -C "${OPENSEARCH_HOME}" --strip-components=1
+
+  if [[ ! -x "${OPENSEARCH_HOME}/bin/opensearch" ]]; then
+    die "Binario opensearch nao encontrado em ${OPENSEARCH_HOME}/bin/opensearch"
+  fi
+
+  log "Criando link simbolico atual do OpenSearch..."
+  ln -sfn "${OPENSEARCH_HOME}" "${OPENSEARCH_CURRENT}"
+
+  log "Criando override de heap do OpenSearch..."
+  mkdir -p "${OPENSEARCH_JVM_DIR}"
+  cat > "${OPENSEARCH_HEAP_FILE}" <<EOF
+-Xms512m
+-Xmx512m
+EOF
+
+  log "Gravando configuracao do OpenSearch em ${OPENSEARCH_YML}..."
+  cat > "${OPENSEARCH_YML}" <<EOF
+cluster.name: graylog
+node.name: graylog-node-1
+path.data: ${OPENSEARCH_DATA_DIR}
+path.logs: ${OPENSEARCH_LOG_DIR}
+network.host: 127.0.0.1
+http.port: 9200
+transport.host: 127.0.0.1
+discovery.type: single-node
+plugins.security.disabled: true
+bootstrap.memory_lock: false
+action.auto_create_index: false
+EOF
+
+  log "Ajustando permissoes do OpenSearch..."
+  chown -R opensearch:opensearch "${OPENSEARCH_BASE_DIR}" "${OPENSEARCH_DATA_DIR}" "${OPENSEARCH_LOG_DIR}" "${OPENSEARCH_RUN_DIR}" "${OPENSEARCH_TMP_DIR}"
+  chmod 755 "${OPENSEARCH_BASE_DIR}" "${OPENSEARCH_DATA_DIR}" "${OPENSEARCH_LOG_DIR}" "${OPENSEARCH_RUN_DIR}" "${OPENSEARCH_TMP_DIR}"
+
+  log "Criando service systemd ${OPENSEARCH_SERVICE_FILE}..."
+  cat > "${OPENSEARCH_SERVICE_FILE}" <<EOF
+[Unit]
+Description=OpenSearch 1.3 Graylog Tarball
+After=network.target mongod-graylog.service
+Wants=mongod-graylog.service
+
+[Service]
+Type=simple
+User=opensearch
+Group=opensearch
+WorkingDirectory=${OPENSEARCH_CURRENT}
+Environment=OPENSEARCH_HOME=${OPENSEARCH_CURRENT}
+Environment=OPENSEARCH_PATH_CONF=${OPENSEARCH_CONF_DIR}
+Environment=OPENSEARCH_TMPDIR=${OPENSEARCH_TMP_DIR}
+Environment=DISABLE_INSTALL_DEMO_CONFIG=true
+Environment=DISABLE_SECURITY_PLUGIN=true
+ExecStart=${OPENSEARCH_CURRENT}/bin/opensearch
+LimitNOFILE=65535
+LimitNPROC=4096
+TimeoutStartSec=180
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  log "Mostrando versao do OpenSearch..."
+  "${OPENSEARCH_CURRENT}/bin/opensearch" --version || true
+
+  log "Recarregando systemd..."
+  systemctl daemon-reload
+
+  log "Habilitando e iniciando opensearch-graylog..."
+  systemctl enable opensearch-graylog
+  systemctl restart opensearch-graylog
+
+  log "Aguardando OpenSearch responder na porta 9200..."
+  for i in $(seq 1 60); do
+    if curl -fsS http://127.0.0.1:9200 >/dev/null 2>&1; then
+      break
+    fi
+    sleep 2
+  done
+
+  if ! curl -fsS http://127.0.0.1:9200 >/dev/null 2>&1; then
+    journalctl -u opensearch-graylog -n 60 --no-pager || true
+    die "OpenSearch nao respondeu em http://127.0.0.1:9200"
+  fi
+
+  log "Validando status do opensearch-graylog..."
+  systemctl --no-pager --full status opensearch-graylog | sed -n '1,25p' || true
+
+  log "Validando se a porta 9200 esta em escuta..."
+  ss -ltnp | grep 9200 || true
+
+  log "Validando HTTP do OpenSearch..."
+  curl -fsS http://127.0.0.1:9200 | sed -n '1,20p'
+
+  log "OpenSearch ${OPENSEARCH_VERSION} instalado por tarball em /srv."
+}
+
 main() {
   precheck
   cleanup_legacy_mongo_apt
@@ -348,8 +492,10 @@ main() {
   install_temurin17
   install_openssl11_compat
   install_mongodb44_tarball
-  log "Etapa do MongoDB 4.4 por tarball concluída."
-  log "Ainda nao instalamos OpenSearch nem Graylog."
+  configure_opensearch_kernel
+  install_opensearch13_tarball
+  log "Etapa do OpenSearch 1.3 por tarball concluída."
+  log "Ainda nao instalamos Graylog."
 }
 
 main "$@"
