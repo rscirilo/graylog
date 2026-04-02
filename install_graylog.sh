@@ -49,8 +49,27 @@ OPENSEARCH_HEAP_FILE="${OPENSEARCH_JVM_DIR}/heap.options"
 OPENSEARCH_SERVICE_FILE="/etc/systemd/system/opensearch-graylog.service"
 OPENSEARCH_SYSCTL_FILE="/etc/sysctl.d/99-graylog-opensearch.conf"
 
+GRAYLOG_REPO_DEB="graylog-4.3-repository_latest.deb"
+GRAYLOG_REPO_URL="https://packages.graylog2.org/repo/packages/${GRAYLOG_REPO_DEB}"
+GRAYLOG_REPO_FILE="${DOWNLOAD_DIR}/${GRAYLOG_REPO_DEB}"
+GRAYLOG_CONF_DIR="/etc/graylog/server"
+GRAYLOG_CONF_FILE="${GRAYLOG_CONF_DIR}/server.conf"
+GRAYLOG_DATA_DIR="${BASE_DIR}/data/graylog"
+GRAYLOG_JOURNAL_DIR="${GRAYLOG_DATA_DIR}/journal"
+GRAYLOG_NODE_ID_FILE="${GRAYLOG_DATA_DIR}/node-id"
+GRAYLOG_LOG_DIR="${BASE_DIR}/log/graylog"
+GRAYLOG_PLUGIN_DIR="/usr/share/graylog-server/plugin"
+GRAYLOG_BIND_ADDR="0.0.0.0:9000"
+GRAYLOG_API_LOCAL="http://127.0.0.1:9000"
+GRAYLOG_SERVICE_NAME="graylog-server"
+
 LEGACY_MONGO_LIST="/etc/apt/sources.list.d/mongodb-org-4.4.list"
 LEGACY_MONGO_KEYRING="/usr/share/keyrings/mongodb-server-4.4.gpg"
+
+SERVER_IP=""
+GRAYLOG_PASSWORD_SECRET=""
+GRAYLOG_ADMIN_PASSWORD=""
+GRAYLOG_ADMIN_PASSWORD_SHA2=""
 
 log() {
   echo -e "[INFO] $*"
@@ -153,9 +172,22 @@ install_base_packages() {
     libc6 \
     libgcc-s1 \
     libstdc++6 \
-    util-linux
+    util-linux \
+    openssl \
+    pwgen \
+    uuid-runtime
 
   log "Pré-requisitos instalados com sucesso."
+}
+
+detect_server_ip() {
+  SERVER_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  if [[ -z "${SERVER_IP}" ]]; then
+    SERVER_IP="127.0.0.1"
+    warn "Nao foi possivel detectar IP principal. Usando ${SERVER_IP}."
+  else
+    log "IP principal detectado: ${SERVER_IP}"
+  fi
 }
 
 install_temurin17() {
@@ -433,6 +465,8 @@ Type=simple
 User=opensearch
 Group=opensearch
 WorkingDirectory=${OPENSEARCH_CURRENT}
+Environment=JAVA_HOME=${TEMURIN_CURRENT}
+Environment=OPENSEARCH_JAVA_HOME=${TEMURIN_CURRENT}
 Environment=OPENSEARCH_HOME=${OPENSEARCH_CURRENT}
 Environment=OPENSEARCH_PATH_CONF=${OPENSEARCH_CONF_DIR}
 Environment=OPENSEARCH_TMPDIR=${OPENSEARCH_TMP_DIR}
@@ -485,8 +519,116 @@ EOF
   log "OpenSearch ${OPENSEARCH_VERSION} instalado por tarball em /srv."
 }
 
+prepare_graylog_secrets() {
+  log "Preparando segredos do Graylog..."
+
+  GRAYLOG_PASSWORD_SECRET="${GRAYLOG_PASSWORD_SECRET:-$(openssl rand -hex 48)}"
+
+  if [[ -n "${GRAYLOG_ADMIN_PASSWORD:-}" ]]; then
+    log "Usando senha de admin recebida por variavel de ambiente GRAYLOG_ADMIN_PASSWORD."
+  else
+    GRAYLOG_ADMIN_PASSWORD="$(python3 - <<'PY'
+import secrets, string
+alphabet = string.ascii_letters + string.digits
+print(''.join(secrets.choice(alphabet) for _ in range(20)))
+PY
+)"
+    log "Senha de admin gerada automaticamente."
+  fi
+
+  GRAYLOG_ADMIN_PASSWORD_SHA2="$(printf '%s' "${GRAYLOG_ADMIN_PASSWORD}" | sha256sum | awk '{print $1}')"
+
+  [[ -n "${GRAYLOG_PASSWORD_SECRET}" ]] || die "Falha ao gerar password_secret."
+  [[ -n "${GRAYLOG_ADMIN_PASSWORD_SHA2}" ]] || die "Falha ao gerar root_password_sha2."
+}
+
+install_graylog43() {
+  log "Baixando repositorio do Graylog 4.3..."
+  wget -O "${GRAYLOG_REPO_FILE}" "${GRAYLOG_REPO_URL}"
+
+  log "Instalando pacote de repositorio do Graylog..."
+  dpkg -i "${GRAYLOG_REPO_FILE}"
+
+  log "Atualizando índice de pacotes após adicionar repositório do Graylog..."
+  apt-get update
+
+  log "Instalando graylog-server e plugins de integracao..."
+  DEBIAN_FRONTEND=noninteractive apt-get install -y graylog-server graylog-integrations-plugins
+
+  mkdir -p "${GRAYLOG_DATA_DIR}" "${GRAYLOG_JOURNAL_DIR}" "${GRAYLOG_LOG_DIR}"
+
+  if id -u graylog >/dev/null 2>&1; then
+    chown -R graylog:graylog "${GRAYLOG_DATA_DIR}" "${GRAYLOG_LOG_DIR}"
+  fi
+
+  if [[ -f "${GRAYLOG_CONF_FILE}" && ! -f "${GRAYLOG_CONF_FILE}.orig" ]]; then
+    cp -a "${GRAYLOG_CONF_FILE}" "${GRAYLOG_CONF_FILE}.orig"
+  fi
+
+  prepare_graylog_secrets
+
+  log "Gravando configuracao do Graylog em ${GRAYLOG_CONF_FILE}..."
+  cat > "${GRAYLOG_CONF_FILE}" <<EOF
+is_master = true
+node_id_file = ${GRAYLOG_NODE_ID_FILE}
+password_secret = ${GRAYLOG_PASSWORD_SECRET}
+root_username = admin
+root_password_sha2 = ${GRAYLOG_ADMIN_PASSWORD_SHA2}
+root_timezone = America/Fortaleza
+bin_dir = /usr/share/graylog-server/bin
+data_dir = ${GRAYLOG_DATA_DIR}
+plugin_dir = ${GRAYLOG_PLUGIN_DIR}
+http_bind_address = ${GRAYLOG_BIND_ADDR}
+http_publish_uri = http://${SERVER_IP}:9000/
+http_external_uri = http://${SERVER_IP}:9000/
+elasticsearch_hosts = http://127.0.0.1:9200
+mongodb_uri = mongodb://127.0.0.1:27017/graylog
+message_journal_dir = ${GRAYLOG_JOURNAL_DIR}
+lb_recognition_period_seconds = 3
+EOF
+
+  if id -u graylog >/dev/null 2>&1; then
+    touch "${GRAYLOG_NODE_ID_FILE}"
+    chown -R graylog:graylog "${GRAYLOG_DATA_DIR}" "${GRAYLOG_LOG_DIR}"
+    chmod 755 "${GRAYLOG_DATA_DIR}" "${GRAYLOG_JOURNAL_DIR}" "${GRAYLOG_LOG_DIR}"
+  fi
+
+  log "Recarregando systemd..."
+  systemctl daemon-reload
+
+  log "Habilitando e iniciando graylog-server..."
+  systemctl enable "${GRAYLOG_SERVICE_NAME}"
+  systemctl restart "${GRAYLOG_SERVICE_NAME}"
+
+  log "Aguardando Graylog responder na porta 9000..."
+  for i in $(seq 1 90); do
+    if curl -fsS "${GRAYLOG_API_LOCAL}/api/system/lbstatus" >/dev/null 2>&1; then
+      break
+    fi
+    if curl -fsS "${GRAYLOG_API_LOCAL}/" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 2
+  done
+
+  log "Validando status do graylog-server..."
+  systemctl --no-pager --full status "${GRAYLOG_SERVICE_NAME}" | sed -n '1,25p' || true
+
+  log "Validando se a porta 9000 esta em escuta..."
+  ss -ltnp | grep 9000 || true
+
+  log "Tentando validar HTTP do Graylog..."
+  curl -fsS "${GRAYLOG_API_LOCAL}/api/system/lbstatus" || curl -I "${GRAYLOG_API_LOCAL}/" || true
+
+  log "Credenciais iniciais do Graylog:"
+  echo "URL    : http://${SERVER_IP}:9000/"
+  echo "Usuario: admin"
+  echo "Senha  : ${GRAYLOG_ADMIN_PASSWORD}"
+}
+
 main() {
   precheck
+  detect_server_ip
   cleanup_legacy_mongo_apt
   install_base_packages
   install_temurin17
@@ -494,8 +636,8 @@ main() {
   install_mongodb44_tarball
   configure_opensearch_kernel
   install_opensearch13_tarball
-  log "Etapa do OpenSearch 1.3 por tarball concluída."
-  log "Ainda nao instalamos Graylog."
+  install_graylog43
+  log "Etapa do Graylog 4.3 concluída."
 }
 
 main "$@"
