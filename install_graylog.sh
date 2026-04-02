@@ -2,9 +2,19 @@
 set -euo pipefail
 
 BASE_DIR="/srv/graylog4"
+DOWNLOAD_DIR="${BASE_DIR}/downloads"
+JAVA_DIR="${BASE_DIR}/java"
+TEMURIN_CURRENT="${JAVA_DIR}/current"
+TEMURIN_ARCHIVE="${DOWNLOAD_DIR}/temurin17-jre-linux-x64.tar.gz"
+TEMURIN_API="https://api.adoptium.net/v3/assets/latest/17/hotspot?architecture=x64&heap_size=normal&image_type=jre&jvm_impl=hotspot&os=linux&project=jdk&vendor=eclipse"
+PROFILE_FILE="/etc/profile.d/temurin17-graylog.sh"
 
 log() {
   echo -e "[INFO] $*"
+}
+
+warn() {
+  echo -e "[WARN] $*"
 }
 
 die() {
@@ -38,8 +48,23 @@ precheck() {
     die "Diretorio /srv nao encontrado."
   fi
 
-  mkdir -p "${BASE_DIR}"/{data,journal,log,tmp,config,downloads}
-  chmod 755 "${BASE_DIR}" "${BASE_DIR}"/{data,journal,log,tmp,config,downloads}
+  case "$(uname -m)" in
+    x86_64|amd64)
+      log "Arquitetura x64 confirmada."
+      ;;
+    *)
+      die "Este script foi preparado para Linux x64. Arquitetura atual: $(uname -m)"
+      ;;
+  esac
+
+  if grep -qiE '(^|[[:space:]])avx([[:space:]]|$)' /proc/cpuinfo; then
+    warn "AVX detectado. Este passo de Java continua valido, mas a VM nao e do perfil sem-AVX."
+  else
+    log "CPU sem AVX confirmada."
+  fi
+
+  mkdir -p "${BASE_DIR}"/{data,journal,log,tmp,config,downloads,java}
+  chmod 755 "${BASE_DIR}" "${BASE_DIR}"/{data,journal,log,tmp,config,downloads,java}
 
   log "Sistema operacional confirmado: ${PRETTY_NAME:-Debian}"
   df -h /srv || true
@@ -59,32 +84,72 @@ install_base_packages() {
     lsb-release \
     apt-transport-https \
     procps \
-    net-tools
+    net-tools \
+    python3 \
+    tar
 
   log "Pré-requisitos instalados com sucesso."
 }
 
-install_java17() {
-  log "Removendo default-jre para evitar ficar preso ao Java 21..."
+install_temurin17() {
+  log "Removendo metapacotes default-jre para evitar conflito de expectativa..."
   DEBIAN_FRONTEND=noninteractive apt-get remove -y default-jre default-jre-headless || true
 
-  log "Instalando OpenJDK 17..."
-  DEBIAN_FRONTEND=noninteractive apt-get install -y openjdk-17-jre-headless
+  log "Consultando a API da Adoptium para descobrir o JRE 17 mais recente..."
+  TEMURIN_URL="$(python3 - <<'PY'
+import json, urllib.request
+url = "https://api.adoptium.net/v3/assets/latest/17/hotspot?architecture=x64&heap_size=normal&image_type=jre&jvm_impl=hotspot&os=linux&project=jdk&vendor=eclipse"
+req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+with urllib.request.urlopen(req, timeout=60) as r:
+    data = json.load(r)
+print(data[0]["binary"]["package"]["link"])
+PY
+)"
 
-  if command -v update-alternatives >/dev/null 2>&1; then
-    JAVA17_BIN="$(readlink -f /usr/bin/java || true)"
-    log "Java atual apontando para: ${JAVA17_BIN}"
+  if [[ -z "${TEMURIN_URL}" ]]; then
+    die "Nao foi possivel obter a URL do Temurin 17."
   fi
 
-  log "Verificando Java instalado..."
-  java -version || true
+  log "Baixando Temurin 17 para ${TEMURIN_ARCHIVE}..."
+  wget -O "${TEMURIN_ARCHIVE}" "${TEMURIN_URL}"
+
+  log "Limpando instalacao anterior do Temurin em ${JAVA_DIR}..."
+  find "${JAVA_DIR}" -mindepth 1 -maxdepth 1 ! -name 'current' -exec rm -rf {} + || true
+  rm -f "${TEMURIN_CURRENT}"
+
+  log "Extraindo Temurin 17..."
+  EXTRACTED_DIR="$(tar -tzf "${TEMURIN_ARCHIVE}" | head -1 | cut -d/ -f1)"
+  [[ -n "${EXTRACTED_DIR}" ]] || die "Nao foi possivel identificar o diretorio interno do arquivo tar.gz."
+
+  tar -xzf "${TEMURIN_ARCHIVE}" -C "${JAVA_DIR}"
+  ln -sfn "${JAVA_DIR}/${EXTRACTED_DIR}" "${TEMURIN_CURRENT}"
+
+  log "Criando profile JAVA_HOME em ${PROFILE_FILE}..."
+  cat > "${PROFILE_FILE}" <<EOF
+export JAVA_HOME="${TEMURIN_CURRENT}"
+export PATH="${TEMURIN_CURRENT}/bin:\$PATH"
+EOF
+  chmod 644 "${PROFILE_FILE}"
+
+  log "Apontando /usr/local/bin/java para o Temurin 17..."
+  ln -sfn "${TEMURIN_CURRENT}/bin/java" /usr/local/bin/java
+  hash -r 2>/dev/null || true
+
+  log "Verificando Java do Temurin..."
+  "${TEMURIN_CURRENT}/bin/java" -version
+
+  log "Verificando java padrao do shell..."
+  /usr/local/bin/java -version
+
+  log "Caminho final do java:"
+  readlink -f /usr/local/bin/java || true
 }
 
 main() {
   precheck
   install_base_packages
-  install_java17
-  log "Etapa do Java 17 concluída."
+  install_temurin17
+  log "Etapa do Temurin 17 concluída com sucesso."
   log "Ainda nao instalamos MongoDB, OpenSearch nem Graylog."
 }
 
