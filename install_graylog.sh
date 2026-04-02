@@ -64,9 +64,17 @@ install_base_packages() {
   log "Pré-requisitos instalados com sucesso."
 }
 
-install_java() {
-  log "Instalando Java..."
-  DEBIAN_FRONTEND=noninteractive apt-get install -y default-jre
+install_java17() {
+  log "Removendo default-jre para evitar ficar preso ao Java 21..."
+  DEBIAN_FRONTEND=noninteractive apt-get remove -y default-jre default-jre-headless || true
+
+  log "Instalando OpenJDK 17..."
+  DEBIAN_FRONTEND=noninteractive apt-get install -y openjdk-17-jre-headless
+
+  if command -v update-alternatives >/dev/null 2>&1; then
+    JAVA17_BIN="$(readlink -f /usr/bin/java || true)"
+    log "Java atual apontando para: ${JAVA17_BIN}"
+  fi
 
   log "Verificando Java instalado..."
   java -version || true
@@ -75,8 +83,8 @@ install_java() {
 main() {
   precheck
   install_base_packages
-  install_java
-  log "Etapa do Java concluída."
+  install_java17
+  log "Etapa do Java 17 concluída."
   log "Ainda nao instalamos MongoDB, OpenSearch nem Graylog."
 }
 
