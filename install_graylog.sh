@@ -9,6 +9,10 @@ TEMURIN_CURRENT="${JAVA_DIR}/current"
 TEMURIN_ARCHIVE="${DOWNLOAD_DIR}/temurin17-jre-linux-x64.tar.gz"
 PROFILE_FILE_JAVA="/etc/profile.d/temurin17-graylog.sh"
 
+OPENSSL11_DEB="libssl1.1_1.1.1w-0+deb11u5_amd64.deb"
+OPENSSL11_URL="https://security.debian.org/debian-security/pool/updates/main/o/openssl/${OPENSSL11_DEB}"
+OPENSSL11_FILE="${DOWNLOAD_DIR}/${OPENSSL11_DEB}"
+
 MONGO_VERSION="4.4.29"
 MONGO_PLATFORM="ubuntu2004"
 MONGO_FILE="mongodb-linux-x86_64-${MONGO_PLATFORM}-${MONGO_VERSION}.tgz"
@@ -194,6 +198,34 @@ EOF
   readlink -f /usr/local/bin/java || true
 }
 
+install_openssl11_compat() {
+  log "Verificando compatibilidade OpenSSL 1.1 para MongoDB 4.4..."
+
+  if ldconfig -p | grep -q 'libssl.so.1.1' && ldconfig -p | grep -q 'libcrypto.so.1.1'; then
+    log "OpenSSL 1.1 ja esta presente no sistema."
+    return 0
+  fi
+
+  log "Baixando ${OPENSSL11_DEB}..."
+  wget -O "${OPENSSL11_FILE}" "${OPENSSL11_URL}"
+
+  log "Instalando ${OPENSSL11_DEB}..."
+  dpkg -i "${OPENSSL11_FILE}"
+
+  log "Atualizando cache de bibliotecas..."
+  ldconfig
+
+  if ! ldconfig -p | grep -q 'libssl.so.1.1'; then
+    die "libssl.so.1.1 nao foi registrada corretamente."
+  fi
+
+  if ! ldconfig -p | grep -q 'libcrypto.so.1.1'; then
+    die "libcrypto.so.1.1 nao foi registrada corretamente."
+  fi
+
+  log "Compatibilidade OpenSSL 1.1 pronta."
+}
+
 install_mongodb44_tarball() {
   log "Preparando diretorios do MongoDB em /srv..."
   mkdir -p "${MONGO_BASE_DIR}" "${MONGO_DATA_DIR}" "${MONGO_LOG_DIR}" "${MONGO_RUN_DIR}" "${MONGO_ETC_DIR}"
@@ -284,7 +316,7 @@ WantedBy=multi-user.target
 EOF
 
   log "Mostrando versao do mongod..."
-  "${MONGO_CURRENT}/bin/mongod" --version | sed -n '1,8p' || true
+  "${MONGO_CURRENT}/bin/mongod" --version | sed -n '1,12p' || true
 
   log "Checando bibliotecas do mongod..."
   ldd "${MONGO_CURRENT}/bin/mongod" | tee "${MONGO_LOG_DIR}/ldd-mongod.txt"
@@ -314,6 +346,7 @@ main() {
   cleanup_legacy_mongo_apt
   install_base_packages
   install_temurin17
+  install_openssl11_compat
   install_mongodb44_tarball
   log "Etapa do MongoDB 4.4 por tarball concluída."
   log "Ainda nao instalamos OpenSearch nem Graylog."
