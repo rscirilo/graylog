@@ -1,48 +1,67 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Graylog All-in-One Installer for Debian 13
-# Executar como root (sudo)
+BASE_DIR="/srv/graylog4"
 
-set -e
+log() {
+  echo -e "[INFO] $*"
+}
 
-echo "--- Iniciando instalação do Graylog ---"
+warn() {
+  echo -e "[WARN] $*"
+}
 
-# 1. Atualização do Sistema e Dependências
-apt-get update && apt-get install -y apt-transport-https gnupg2 curl uuid-runtime dirmngr pwgen openjdk-17-jre-headless
+die() {
+  echo -e "[ERRO] $*" >&2
+  exit 1
+}
 
-# 2. Instalação do MongoDB 6.0
-curl -fsSL https://www.mongodb.org/static/pgp/server-6.0.asc | gpg --dearmor -o /usr/share/keyrings/mongodb-server-6.0.gpg
-echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-6.0.gpg ] http://repo.mongodb.org/apt/debian bullseye/mongodb-org/6.0 main" | tee /etc/apt/sources.list.d/mongodb-org-6.0.list
-apt-get update && apt-get install -y mongodb-org
-systemctl enable mongod && systemctl start mongod
+log "Iniciando pré-checagem do ambiente..."
 
-# 3. Instalação do OpenSearch 2.x
-curl -fsSL https://artifacts.opensearch.org/publickeys/opensearch.pgp | gpg --dearmor -o /usr/share/keyrings/opensearch.gpg
-echo "deb [ signed-by=/usr/share/keyrings/opensearch.gpg ] https://artifacts.opensearch.org/releases/bundle/opensearch/2.x/apt stable main" | tee /etc/apt/sources.list.d/opensearch-2.x.list
-apt-get update && apt-get install -y opensearch
-systemctl enable opensearch && systemctl start opensearch
+if [[ "${EUID}" -ne 0 ]]; then
+  die "Execute este script como root."
+fi
 
-# 4. Instalação do Graylog 6.0
-wget https://packages.graylog2.org/repo/packages/graylog-6.0-repository_latest.deb
-dpkg -i graylog-6.0-repository_latest.deb
-apt-get update && apt-get install -y graylog-server
+if [[ ! -f /etc/os-release ]]; then
+  die "Arquivo /etc/os-release nao encontrado."
+fi
 
-# 5. Configuração de Segurança (Geração de Secrets)
-SECRET=$(pwgen -s 96 1)
-sed -i "s/password_secret =.*/password_secret = $SECRET/" /etc/graylog/server/server.conf
+# shellcheck disable=SC1091
+source /etc/os-release
 
-# Defina sua senha de admin aqui (padrão: admin)
-ADMIN_HASH=$(echo -n "admin" | sha256sum | awk '{print $1}')
-sed -i "s/root_password_sha2 =.*/root_password_sha2 = $ADMIN_HASH/" /etc/graylog/server/server.conf
+if [[ "${ID:-}" != "debian" ]]; then
+  die "Este script foi feito apenas para Debian."
+fi
 
-# Permitir acesso externo na porta 9000
-sed -i 's/#http_bind_address = 127.0.0.1:9000/http_bind_address = 0.0.0.0:9000/' /etc/graylog/server/server.conf
+if [[ "${VERSION_ID:-}" != "13" && "${VERSION_CODENAME:-}" != "trixie" ]]; then
+  die "Esperado Debian 13 (Trixie). Encontrado: ${PRETTY_NAME:-desconhecido}"
+fi
 
-# 6. Inicialização
-systemctl daemon-reload
-systemctl enable graylog-server
-systemctl start graylog-server
+if grep -qiE '(^|[[:space:]])avx([[:space:]]|$)' /proc/cpuinfo; then
+  die "AVX detectado nesta VM. Use o script da versao COM AVX."
+fi
 
-echo "--- Instalação concluída! ---"
-echo "Acesse: http://$(hostname -I | awk '{print $1}'):9000"
-echo "Usuário: admin | Senha: admin"
+if [[ ! -d /srv ]]; then
+  die "Diretorio /srv nao encontrado."
+fi
+
+log "Sistema operacional confirmado: ${PRETTY_NAME:-Debian}"
+log "CPU sem AVX confirmada."
+log "Preparando estrutura base em ${BASE_DIR}..."
+
+mkdir -p "${BASE_DIR}"/{data,journal,log,tmp,config,downloads}
+chmod 755 "${BASE_DIR}"
+chmod 755 "${BASE_DIR}"/{data,journal,log,tmp,config,downloads}
+
+log "Estrutura criada com sucesso:"
+log " - ${BASE_DIR}/data"
+log " - ${BASE_DIR}/journal"
+log " - ${BASE_DIR}/log"
+log " - ${BASE_DIR}/tmp"
+log " - ${BASE_DIR}/config"
+log " - ${BASE_DIR}/downloads"
+
+df -h /srv || true
+
+log "Pre-checagem concluida com sucesso."
+log "Nenhum pacote foi instalado ainda."
