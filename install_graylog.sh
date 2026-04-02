@@ -27,6 +27,9 @@ MONGO_CONF_FILE="${MONGO_ETC_DIR}/mongod.conf"
 PROFILE_FILE_MONGO="/etc/profile.d/mongodb44-graylog.sh"
 MONGO_SERVICE_FILE="/etc/systemd/system/mongod-graylog.service"
 
+LEGACY_MONGO_LIST="/etc/apt/sources.list.d/mongodb-org-4.4.list"
+LEGACY_MONGO_KEYRING="/usr/share/keyrings/mongodb-server-4.4.gpg"
+
 log() {
   echo -e "[INFO] $*"
 }
@@ -87,6 +90,20 @@ precheck() {
   log "Sistema operacional confirmado: ${PRETTY_NAME:-Debian}"
   df -h /srv || true
   log "Pré-checagem concluída com sucesso."
+}
+
+cleanup_legacy_mongo_apt() {
+  log "Removendo configuracao antiga do MongoDB via apt, se existir..."
+
+  if [[ -f "${LEGACY_MONGO_LIST}" ]]; then
+    rm -f "${LEGACY_MONGO_LIST}"
+    log "Arquivo removido: ${LEGACY_MONGO_LIST}"
+  fi
+
+  if [[ -f "${LEGACY_MONGO_KEYRING}" ]]; then
+    rm -f "${LEGACY_MONGO_KEYRING}"
+    log "Arquivo removido: ${LEGACY_MONGO_KEYRING}"
+  fi
 }
 
 install_base_packages() {
@@ -239,9 +256,7 @@ net:
 processManagement:
   fork: false
   pidFilePath: ${MONGO_PID_FILE}
-
-setParameter:
-  enableLocalhostAuthBypass: false
+  timeZoneInfo: /usr/share/zoneinfo
 EOF
 
   log "Criando service systemd ${MONGO_SERVICE_FILE}..."
@@ -269,7 +284,7 @@ WantedBy=multi-user.target
 EOF
 
   log "Mostrando versao do mongod..."
-  "${MONGO_CURRENT}/bin/mongod" --version | sed -n '1,6p' || true
+  "${MONGO_CURRENT}/bin/mongod" --version | sed -n '1,8p' || true
 
   log "Checando bibliotecas do mongod..."
   ldd "${MONGO_CURRENT}/bin/mongod" | tee "${MONGO_LOG_DIR}/ldd-mongod.txt"
@@ -296,6 +311,7 @@ EOF
 
 main() {
   precheck
+  cleanup_legacy_mongo_apt
   install_base_packages
   install_temurin17
   install_mongodb44_tarball
