@@ -49,27 +49,32 @@ OPENSEARCH_HEAP_FILE="${OPENSEARCH_JVM_DIR}/heap.options"
 OPENSEARCH_SERVICE_FILE="/etc/systemd/system/opensearch-graylog.service"
 OPENSEARCH_SYSCTL_FILE="/etc/sysctl.d/99-graylog-opensearch.conf"
 
-GRAYLOG_REPO_DEB="graylog-4.3-repository_latest.deb"
-GRAYLOG_REPO_URL="https://packages.graylog2.org/repo/packages/${GRAYLOG_REPO_DEB}"
-GRAYLOG_REPO_FILE="${DOWNLOAD_DIR}/${GRAYLOG_REPO_DEB}"
-GRAYLOG_CONF_DIR="/etc/graylog/server"
-GRAYLOG_CONF_FILE="${GRAYLOG_CONF_DIR}/server.conf"
-GRAYLOG_DATA_DIR="${BASE_DIR}/data/graylog"
-GRAYLOG_JOURNAL_DIR="${GRAYLOG_DATA_DIR}/journal"
-GRAYLOG_NODE_ID_FILE="${GRAYLOG_DATA_DIR}/node-id"
+GRAYLOG_VERSION="4.3.15"
+GRAYLOG_FILE="graylog-${GRAYLOG_VERSION}.tgz"
+GRAYLOG_URL="https://downloads.graylog.org/releases/graylog/${GRAYLOG_FILE}"
+GRAYLOG_ARCHIVE="${DOWNLOAD_DIR}/${GRAYLOG_FILE}"
+GRAYLOG_BASE_DIR="${BASE_DIR}/graylog"
+GRAYLOG_HOME="${GRAYLOG_BASE_DIR}/${GRAYLOG_VERSION}"
+GRAYLOG_CURRENT="${GRAYLOG_BASE_DIR}/current"
+GRAYLOG_DATA_ROOT="${BASE_DIR}/data/graylog"
+GRAYLOG_DATA_DIR="${GRAYLOG_DATA_ROOT}/data"
+GRAYLOG_JOURNAL_DIR="${GRAYLOG_DATA_ROOT}/journal"
 GRAYLOG_LOG_DIR="${BASE_DIR}/log/graylog"
-GRAYLOG_PLUGIN_DIR="/usr/share/graylog-server/plugin"
+GRAYLOG_NODE_ID_FILE="${GRAYLOG_DATA_ROOT}/node-id"
+GRAYLOG_CONF_FILE="${GRAYLOG_HOME}/graylog.conf"
+GRAYLOG_SERVICE_FILE="/etc/systemd/system/graylog-tarball.service"
 GRAYLOG_BIND_ADDR="0.0.0.0:9000"
-GRAYLOG_API_LOCAL="http://127.0.0.1:9000"
-GRAYLOG_SERVICE_NAME="graylog-server"
+GRAYLOG_HTTP_LOCAL="http://127.0.0.1:9000"
+GRAYLOG_HTTP_EXTERNAL=""
+GRAYLOG_PASSWORD_SECRET=""
+GRAYLOG_ADMIN_PASSWORD=""
+GRAYLOG_ADMIN_PASSWORD_SHA2=""
+GRAYLOG_JAVA_OPTS="-Xms512m -Xmx512m"
 
 LEGACY_MONGO_LIST="/etc/apt/sources.list.d/mongodb-org-4.4.list"
 LEGACY_MONGO_KEYRING="/usr/share/keyrings/mongodb-server-4.4.gpg"
 
 SERVER_IP=""
-GRAYLOG_PASSWORD_SECRET=""
-GRAYLOG_ADMIN_PASSWORD=""
-GRAYLOG_ADMIN_PASSWORD_SHA2=""
 
 log() {
   echo -e "[INFO] $*"
@@ -125,8 +130,8 @@ precheck() {
     log "CPU sem AVX confirmada."
   fi
 
-  mkdir -p "${BASE_DIR}"/{data,journal,log,tmp,config,downloads,java,mongodb,opensearch,run}
-  chmod 755 "${BASE_DIR}" "${BASE_DIR}"/{data,journal,log,tmp,config,downloads,java,mongodb,opensearch,run}
+  mkdir -p "${BASE_DIR}"/{data,journal,log,tmp,config,downloads,java,mongodb,opensearch,graylog,run}
+  chmod 755 "${BASE_DIR}" "${BASE_DIR}"/{data,journal,log,tmp,config,downloads,java,mongodb,opensearch,graylog,run}
 
   log "Sistema operacional confirmado: ${PRETTY_NAME:-Debian}"
   df -h /srv || true
@@ -145,6 +150,17 @@ cleanup_legacy_mongo_apt() {
     rm -f "${LEGACY_MONGO_KEYRING}"
     log "Arquivo removido: ${LEGACY_MONGO_KEYRING}"
   fi
+}
+
+cleanup_legacy_graylog_apt() {
+  log "Removendo configuracao antiga do Graylog via apt, se existir..."
+
+  if dpkg -s graylog-4.3-repository >/dev/null 2>&1; then
+    dpkg -r graylog-4.3-repository || true
+  fi
+
+  find /etc/apt/sources.list.d -maxdepth 1 -type f -iname '*graylog*' -exec rm -f {} \; 2>/dev/null || true
+  rm -f /etc/apt/trusted.gpg.d/graylog*.gpg /usr/share/keyrings/graylog*.gpg 2>/dev/null || true
 }
 
 install_base_packages() {
@@ -174,7 +190,6 @@ install_base_packages() {
     libstdc++6 \
     util-linux \
     openssl \
-    pwgen \
     uuid-runtime
 
   log "Pré-requisitos instalados com sucesso."
@@ -182,12 +197,15 @@ install_base_packages() {
 
 detect_server_ip() {
   SERVER_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+
   if [[ -z "${SERVER_IP}" ]]; then
     SERVER_IP="127.0.0.1"
     warn "Nao foi possivel detectar IP principal. Usando ${SERVER_IP}."
   else
     log "IP principal detectado: ${SERVER_IP}"
   fi
+
+  GRAYLOG_HTTP_EXTERNAL="http://${SERVER_IP}:9000/"
 }
 
 install_temurin17() {
@@ -542,32 +560,35 @@ PY
   [[ -n "${GRAYLOG_ADMIN_PASSWORD_SHA2}" ]] || die "Falha ao gerar root_password_sha2."
 }
 
-install_graylog43() {
-  log "Baixando repositorio do Graylog 4.3..."
-  wget -O "${GRAYLOG_REPO_FILE}" "${GRAYLOG_REPO_URL}"
+install_graylog43_tarball() {
+  log "Preparando diretorios do Graylog em /srv..."
+  mkdir -p "${GRAYLOG_BASE_DIR}" "${GRAYLOG_DATA_ROOT}" "${GRAYLOG_DATA_DIR}" "${GRAYLOG_JOURNAL_DIR}" "${GRAYLOG_LOG_DIR}"
 
-  log "Instalando pacote de repositorio do Graylog..."
-  dpkg -i "${GRAYLOG_REPO_FILE}"
-
-  log "Atualizando índice de pacotes após adicionar repositório do Graylog..."
-  apt-get update
-
-  log "Instalando graylog-server e plugins de integracao..."
-  DEBIAN_FRONTEND=noninteractive apt-get install -y graylog-server graylog-integrations-plugins
-
-  mkdir -p "${GRAYLOG_DATA_DIR}" "${GRAYLOG_JOURNAL_DIR}" "${GRAYLOG_LOG_DIR}"
-
-  if id -u graylog >/dev/null 2>&1; then
-    chown -R graylog:graylog "${GRAYLOG_DATA_DIR}" "${GRAYLOG_LOG_DIR}"
+  if ! id -u graylog >/dev/null 2>&1; then
+    log "Criando usuario de sistema graylog..."
+    useradd --system --home-dir "${GRAYLOG_BASE_DIR}" --shell /usr/sbin/nologin graylog
   fi
 
-  if [[ -f "${GRAYLOG_CONF_FILE}" && ! -f "${GRAYLOG_CONF_FILE}.orig" ]]; then
-    cp -a "${GRAYLOG_CONF_FILE}" "${GRAYLOG_CONF_FILE}.orig"
+  log "Baixando Graylog ${GRAYLOG_VERSION} por tarball..."
+  wget -O "${GRAYLOG_ARCHIVE}" "${GRAYLOG_URL}"
+
+  log "Limpando instalacao anterior do Graylog em ${GRAYLOG_HOME}..."
+  rm -rf "${GRAYLOG_HOME}"
+  mkdir -p "${GRAYLOG_HOME}"
+
+  log "Extraindo Graylog em ${GRAYLOG_HOME}..."
+  tar -xzf "${GRAYLOG_ARCHIVE}" -C "${GRAYLOG_HOME}" --strip-components=1
+
+  if [[ ! -f "${GRAYLOG_HOME}/graylog.jar" ]]; then
+    die "Arquivo graylog.jar nao encontrado em ${GRAYLOG_HOME}"
   fi
+
+  log "Criando link simbolico atual do Graylog..."
+  ln -sfn "${GRAYLOG_HOME}" "${GRAYLOG_CURRENT}"
 
   prepare_graylog_secrets
 
-  log "Gravando configuracao do Graylog em ${GRAYLOG_CONF_FILE}..."
+  log "Criando configuracao do Graylog em ${GRAYLOG_CONF_FILE}..."
   cat > "${GRAYLOG_CONF_FILE}" <<EOF
 is_master = true
 node_id_file = ${GRAYLOG_NODE_ID_FILE}
@@ -575,53 +596,77 @@ password_secret = ${GRAYLOG_PASSWORD_SECRET}
 root_username = admin
 root_password_sha2 = ${GRAYLOG_ADMIN_PASSWORD_SHA2}
 root_timezone = America/Fortaleza
-bin_dir = /usr/share/graylog-server/bin
+bin_dir = ${GRAYLOG_CURRENT}/bin
 data_dir = ${GRAYLOG_DATA_DIR}
-plugin_dir = ${GRAYLOG_PLUGIN_DIR}
+plugin_dir = ${GRAYLOG_CURRENT}/plugin
 http_bind_address = ${GRAYLOG_BIND_ADDR}
-http_publish_uri = http://${SERVER_IP}:9000/
-http_external_uri = http://${SERVER_IP}:9000/
+http_publish_uri = ${GRAYLOG_HTTP_EXTERNAL}
+http_external_uri = ${GRAYLOG_HTTP_EXTERNAL}
 elasticsearch_hosts = http://127.0.0.1:9200
 mongodb_uri = mongodb://127.0.0.1:27017/graylog
 message_journal_dir = ${GRAYLOG_JOURNAL_DIR}
 lb_recognition_period_seconds = 3
 EOF
 
-  if id -u graylog >/dev/null 2>&1; then
-    touch "${GRAYLOG_NODE_ID_FILE}"
-    chown -R graylog:graylog "${GRAYLOG_DATA_DIR}" "${GRAYLOG_LOG_DIR}"
-    chmod 755 "${GRAYLOG_DATA_DIR}" "${GRAYLOG_JOURNAL_DIR}" "${GRAYLOG_LOG_DIR}"
-  fi
+  touch "${GRAYLOG_NODE_ID_FILE}"
+  chown -R graylog:graylog "${GRAYLOG_BASE_DIR}" "${GRAYLOG_DATA_ROOT}" "${GRAYLOG_LOG_DIR}"
+  chmod 755 "${GRAYLOG_BASE_DIR}" "${GRAYLOG_DATA_ROOT}" "${GRAYLOG_DATA_DIR}" "${GRAYLOG_JOURNAL_DIR}" "${GRAYLOG_LOG_DIR}"
+
+  log "Criando service systemd ${GRAYLOG_SERVICE_FILE}..."
+  cat > "${GRAYLOG_SERVICE_FILE}" <<EOF
+[Unit]
+Description=Graylog 4.3 Tarball
+After=network.target mongod-graylog.service opensearch-graylog.service
+Wants=mongod-graylog.service opensearch-graylog.service
+
+[Service]
+Type=simple
+User=graylog
+Group=graylog
+WorkingDirectory=${GRAYLOG_CURRENT}
+Environment=JAVA_HOME=${TEMURIN_CURRENT}
+Environment=GRAYLOG_SERVER_JAVA_OPTS=${GRAYLOG_JAVA_OPTS}
+ExecStart=${TEMURIN_CURRENT}/bin/java ${GRAYLOG_JAVA_OPTS} -jar ${GRAYLOG_CURRENT}/graylog.jar server -f ${GRAYLOG_CONF_FILE}
+SuccessExitStatus=143
+LimitNOFILE=65536
+TimeoutStartSec=180
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
 
   log "Recarregando systemd..."
   systemctl daemon-reload
 
-  log "Habilitando e iniciando graylog-server..."
-  systemctl enable "${GRAYLOG_SERVICE_NAME}"
-  systemctl restart "${GRAYLOG_SERVICE_NAME}"
+  log "Habilitando e iniciando graylog-tarball..."
+  systemctl enable graylog-tarball
+  systemctl restart graylog-tarball
 
   log "Aguardando Graylog responder na porta 9000..."
   for i in $(seq 1 90); do
-    if curl -fsS "${GRAYLOG_API_LOCAL}/api/system/lbstatus" >/dev/null 2>&1; then
+    if curl -fsS ${GRAYLOG_HTTP_LOCAL}/api/system/lbstatus >/dev/null 2>&1; then
       break
     fi
-    if curl -fsS "${GRAYLOG_API_LOCAL}/" >/dev/null 2>&1; then
+    if curl -fsS ${GRAYLOG_HTTP_LOCAL}/ >/dev/null 2>&1; then
       break
     fi
     sleep 2
   done
 
-  log "Validando status do graylog-server..."
-  systemctl --no-pager --full status "${GRAYLOG_SERVICE_NAME}" | sed -n '1,25p' || true
+  log "Validando status do graylog-tarball..."
+  systemctl --no-pager --full status graylog-tarball | sed -n '1,25p' || true
 
   log "Validando se a porta 9000 esta em escuta..."
   ss -ltnp | grep 9000 || true
 
   log "Tentando validar HTTP do Graylog..."
-  curl -fsS "${GRAYLOG_API_LOCAL}/api/system/lbstatus" || curl -I "${GRAYLOG_API_LOCAL}/" || true
+  curl -fsS ${GRAYLOG_HTTP_LOCAL}/api/system/lbstatus || curl -I ${GRAYLOG_HTTP_LOCAL}/ || true
 
   log "Credenciais iniciais do Graylog:"
-  echo "URL    : http://${SERVER_IP}:9000/"
+  echo "URL    : ${GRAYLOG_HTTP_EXTERNAL}"
   echo "Usuario: admin"
   echo "Senha  : ${GRAYLOG_ADMIN_PASSWORD}"
 }
@@ -630,14 +675,15 @@ main() {
   precheck
   detect_server_ip
   cleanup_legacy_mongo_apt
+  cleanup_legacy_graylog_apt
   install_base_packages
   install_temurin17
   install_openssl11_compat
   install_mongodb44_tarball
   configure_opensearch_kernel
   install_opensearch13_tarball
-  install_graylog43
-  log "Etapa do Graylog 4.3 concluída."
+  install_graylog43_tarball
+  log "Etapa do Graylog 4.3 por tarball concluída."
 }
 
 main "$@"
