@@ -277,6 +277,6 @@ Este projeto está licenciado sob a licença MIT.
 
 Você pode usar, copiar, modificar e distribuir este projeto, desde que mantenha o aviso de copyright e o texto da licença.
 
-Para mais detalhes, consulte o arquivo `LICENSE`.
+Para mais detalhes, consulte o arquivo [LICENSE](./LICENSE).
 
 ## contribuições é sempre bem-vindas
