@@ -6,7 +6,6 @@ set -euo pipefail
 # Objetivo: Instalar Graylog + MongoDB + OpenSearch SEM Docker
 #           em Debian 13 (Trixie), com dados em /srv
 #           e senha padrão do admin: @123Mudar
-# Autor: Rodrigo Cirilo (layout de passos adaptado)
 # =====================================================================
 
 ADMIN_PASS='@123Mudar'
@@ -37,15 +36,14 @@ mkdir -p "${GRAYLOG_DIR}"/{etc,data,logs}
 mkdir -p "${MONGO_DIR}"/data
 mkdir -p "${OPENSEARCH_DIR}"/data
 
-echo "[4/12] Instalando Java (OpenJDK)"
+echo "[4/12] Instalando Java (OpenJDK default)"
 apt install -y default-jre-headless
 
 # =====================================================================
-# MongoDB - versão compatível (exemplo: 6.x)
+# MongoDB - versão compatível (6.x), usando repo de bookworm
 # =====================================================================
 echo "[5/12] Instalando MongoDB"
 
-# Repo MongoDB (ajuste se a versão mudar na doc oficial)
 if ! test -f /etc/apt/trusted.gpg.d/mongodb-org-6.gpg; then
   curl -fsSL https://www.mongodb.org/static/pgp/server-6.0.asc \
     | gpg --dearmor -o /etc/apt/trusted.gpg.d/mongodb-org-6.gpg
@@ -66,7 +64,7 @@ systemctl enable mongod
 systemctl restart mongod
 
 # =====================================================================
-# OpenSearch (modo compat) - single node
+# OpenSearch (modo lab) - single node
 # =====================================================================
 echo "[6/12] Instalando OpenSearch"
 
@@ -82,7 +80,6 @@ EOF
 apt update
 apt install -y opensearch
 
-# Configuração mínima para single-node, sem segurança interna
 OPENSEARCH_YML="/etc/opensearch/opensearch.yml"
 
 sed -i 's|^#\?cluster.name:.*|cluster.name: graylog|' "${OPENSEARCH_YML}"
@@ -90,7 +87,6 @@ sed -i 's|^#\?node.name:.*|node.name: node-1|' "${OPENSEARCH_YML}"
 sed -i 's|^#\?path.data:.*|path.data: /srv/opensearch/data|' "${OPENSEARCH_YML}"
 sed -i 's|^#\?path.logs:.*|path.logs: /var/log/opensearch|' "${OPENSEARCH_YML}"
 
-# Single-node, desabilita segurança interna para uso em lab (NÃO use assim em produção)
 grep -q '^discovery.type:' "${OPENSEARCH_YML}" \
   && sed -i 's|^discovery.type:.*|discovery.type: single-node|' "${OPENSEARCH_YML}" \
   || echo "discovery.type: single-node" >> "${OPENSEARCH_YML}"
@@ -101,7 +97,6 @@ grep -q '^plugins.security.disabled:' "${OPENSEARCH_YML}" \
 
 chown -R opensearch:opensearch "${OPENSEARCH_DIR}"
 
-# vm.max_map_count para OpenSearch
 echo "[7/12] Ajustando vm.max_map_count para OpenSearch"
 cat >/etc/sysctl.d/99-opensearch.conf <<EOF
 vm.max_map_count=262144
@@ -116,8 +111,8 @@ systemctl restart opensearch
 # =====================================================================
 echo "[8/12] Instalando Graylog"
 
-# Repo Graylog (5.x como base compat; ajuste conforme doc oficial)
-if ! test -f /etc/apt/trusted.gpg.d/graylog.gpg; then
+# Repo Graylog 5.x (ajuste se trocar para 6.x na doc oficial)
+if ! test -f /etc/apt/sources.list.d/graylog.list; then
   curl -fsSL https://packages.graylog2.org/repo/packages/graylog-5.x-repository_latest.deb -o /tmp/graylog-repo.deb
   dpkg -i /tmp/graylog-repo.deb
 fi
@@ -125,41 +120,36 @@ fi
 apt update
 apt install -y graylog-server
 
-# Gera password_secret e root_password_sha2
 echo "[9/12] Configurando Graylog (password_secret e root_password_sha2)"
 GRAYLOG_CONF="/etc/graylog/server/server.conf"
 
 # password_secret: string grande e aleatória
-if ! grep -q '^password_secret = ' "${GRAYLOG_CONF}"; then
-  PASSWORD_SECRET="$(pwgen -N 1 -s 96)"
-  echo "password_secret = ${PASSWORD_SECRET}" >> "${GRAYLOG_CONF}"
-else
-  PASSWORD_SECRET="$(pwgen -N 1 -s 96)"
+PASSWORD_SECRET="$(pwgen -N 1 -s 96)"
+if grep -q '^password_secret = ' "${GRAYLOG_CONF}"; then
   sed -i "s|^password_secret = .*|password_secret = ${PASSWORD_SECRET}|" "${GRAYLOG_CONF}"
+else
+  echo "password_secret = ${PASSWORD_SECRET}" >> "${GRAYLOG_CONF}"
 fi
 
 # root_password_sha2 com base em ADMIN_PASS
 ROOT_SHA2="$(printf '%s' "${ADMIN_PASS}" | sha256sum | awk '{print $1}')"
-if ! grep -q '^root_password_sha2 = ' "${GRAYLOG_CONF}"; then
-  echo "root_password_sha2 = ${ROOT_SHA2}" >> "${GRAYLOG_CONF}"
-else
+if grep -q '^root_password_sha2 = ' "${GRAYLOG_CONF}"; then
   sed -i "s|^root_password_sha2 = .*|root_password_sha2 = ${ROOT_SHA2}|" "${GRAYLOG_CONF}"
+else
+  echo "root_password_sha2 = ${ROOT_SHA2}" >> "${GRAYLOG_CONF}"
 fi
 
-# Ajusta bind address e OpenSearch
+# Bind HTTP e OpenSearch
 sed -i "s|^#\?http_bind_address = .*|http_bind_address = 0.0.0.0:9000|" "${GRAYLOG_CONF}"
 
-# Ajusta output para usar OpenSearch
-# Exemplos baseados na doc de "self-managed OpenSearch" (ajuste se a sintaxe mudar) [web:611]
-if ! grep -q '^elasticsearch_hosts = ' "${GRAYLOG_CONF}"; then
-  echo "elasticsearch_hosts = http://127.0.0.1:9200" >> "${GRAYLOG_CONF}"
-else
+if grep -q '^elasticsearch_hosts = ' "${GRAYLOG_CONF}"; then
   sed -i 's|^elasticsearch_hosts = .*|elasticsearch_hosts = http://127.0.0.1:9200|' "${GRAYLOG_CONF}"
+else
+  echo "elasticsearch_hosts = http://127.0.0.1:9200" >> "${GRAYLOG_CONF}"
 fi
 
-# Cria link de dados para /srv se quiser usar como storage Graylog (opcional)
-# Aqui deixo só como exemplo: você pode montar /var/lib/graylog-server -> /srv/graylog/data
-if [[ ! -d /var/lib/graylog-server.bak && -d /var/lib/graylog-server ]]; then
+# Aponta storage do Graylog para /srv/graylog/data via symlink
+if [[ -d /var/lib/graylog-server && ! -L /var/lib/graylog-server ]]; then
   mv /var/lib/graylog-server /var/lib/graylog-server.bak
 fi
 if [[ ! -L /var/lib/graylog-server ]]; then
@@ -179,7 +169,7 @@ systemctl restart mongod
 systemctl restart opensearch
 systemctl restart graylog-server
 
-echo "[12/12] Status dos serviços"
+echo "[12/12] Status dos serviços (resumo)"
 systemctl --no-pager status mongod --lines=3 || true
 systemctl --no-pager status opensearch --lines=3 || true
 systemctl --no-pager status graylog-server --lines=3 || true
