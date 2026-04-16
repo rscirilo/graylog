@@ -38,7 +38,7 @@ mkdir -p "${MONGO_DIR}"/data
 mkdir -p "${OPENSEARCH_DIR}"/data
 
 echo "[4/12] Instalando Java (OpenJDK)"
-apt install -y openjdk-11-jre-headless
+apt install -y default-jre-headless
 
 # =====================================================================
 # MongoDB - versão compatível (exemplo: 6.x)
