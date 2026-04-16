@@ -114,29 +114,47 @@ wait_service "MongoDB" 10
 check_service "mongod" "27017""
 
 # ─────────────────────────────────────────────────────────────────────
-# OPENSEARCH 2.x
-# Repo stable — Trixie pode nao ter build; usamos bookworm como fallback
+# OPENSEARCH 2.19.1 — instalação via tarball (sem apt, sem GPG)
+# Tarball inclui JDK próprio — não depende do Java do sistema
 # Segurança desabilitada (lab only)
 # ─────────────────────────────────────────────────────────────────────
-echo "[6/12] Instalando OpenSearch 2.x"
+echo "[6/12] Instalando OpenSearch 2.19.1 via tarball"
 
-OS_GPG="/usr/share/keyrings/opensearch.gpg"
-if [[ ! -f "${OS_GPG}" ]]; then
-  curl -fsSL https://artifacts.opensearch.org/publickeys/opensearch.pgp \
-    | gpg --dearmor -o "${OS_GPG}"
+OS_VERSION="2.19.1"
+OS_TARBALL="opensearch-${OS_VERSION}-linux-x64.tar.gz"
+OS_URL="https://artifacts.opensearch.org/releases/bundle/opensearch/${OS_VERSION}/${OS_TARBALL}"
+OS_INSTALL_DIR="/opt/opensearch"
+OS_DATA_DIR="${OPENSEARCH_DIR}/data"
+OS_LOG_DIR="/var/log/opensearch"
+
+# Remove repo apt antigo se existir
+rm -f /etc/apt/sources.list.d/opensearch-2.x.list \
+      /usr/share/keyrings/opensearch.gpg 2>/dev/null || true
+
+# Baixa tarball
+echo "  -> Baixando OpenSearch ${OS_VERSION}..."
+wget -qO "/tmp/${OS_TARBALL}" "${OS_URL}"
+
+# Extrai para /opt/opensearch
+rm -rf "${OS_INSTALL_DIR}"
+mkdir -p "${OS_INSTALL_DIR}"
+tar -xzf "/tmp/${OS_TARBALL}" -C "${OS_INSTALL_DIR}" --strip-components=1
+rm -f "/tmp/${OS_TARBALL}"
+
+# Cria usuário dedicado se não existir
+if ! id opensearch &>/dev/null; then
+  useradd -r -s /sbin/nologin -d "${OS_INSTALL_DIR}" opensearch
 fi
 
-cat > /etc/apt/sources.list.d/opensearch-2.x.list <<EOF
-deb [ signed-by=${OS_GPG} ] https://artifacts.opensearch.org/releases/bundle/opensearch/2.x/apt stable main
-EOF
+# Cria diretórios de dados e logs
+mkdir -p "${OS_DATA_DIR}" "${OS_LOG_DIR}"
+chown -R opensearch:opensearch \
+  "${OS_INSTALL_DIR}" \
+  "${OS_DATA_DIR}" \
+  "${OS_LOG_DIR}"
 
-apt-get update -qq
-
-# OPENSEARCH_INITIAL_ADMIN_PASSWORD exigido pelo instalador 2.12+
-OPENSEARCH_INITIAL_ADMIN_PASSWORD="@OpenSearch123!" \
-  apt-get install -y opensearch
-
-OPENSEARCH_YML="/etc/opensearch/opensearch.yml"
+# Configura opensearch.yml
+OPENSEARCH_YML="${OS_INSTALL_DIR}/config/opensearch.yml"
 
 python3 - <<PYEOF
 import re
@@ -146,8 +164,8 @@ yml = open("${OPENSEARCH_YML}").read()
 settings = {
     r'#?\s*cluster\.name:.*':   'cluster.name: graylog',
     r'#?\s*node\.name:.*':      'node.name: node-1',
-    r'#?\s*path\.data:.*':      'path.data: ${OPENSEARCH_DIR}/data',
-    r'#?\s*path\.logs:.*':      'path.logs: /var/log/opensearch',
+    r'#?\s*path\.data:.*':      'path.data: ${OS_DATA_DIR}',
+    r'#?\s*path\.logs:.*':      'path.logs: ${OS_LOG_DIR}',
     r'#?\s*network\.host:.*':   'network.host: 127.0.0.1',
     r'#?\s*http\.port:.*':      'http.port: 9200',
     r'#?\s*discovery\.type:.*': 'discovery.type: single-node',
@@ -159,39 +177,47 @@ for pattern, replacement in settings.items():
     else:
         yml += f'\n{replacement}\n'
 
-# Desabilita segurança (lab only — nunca em producao)
-if 'plugins.security.disabled' not in yml:
-    yml += '\nplugins.security.disabled: true\n'
-else:
-    yml = re.sub(
-        r'plugins\.security\.disabled:.*',
-        'plugins.security.disabled: true',
-        yml
-    )
+# Desabilita segurança — lab only
+for key in ['plugins.security.disabled',
+            'plugins.security.ssl.http.enabled',
+            'plugins.security.ssl.transport.enforce_hostname_verification']:
+    if key not in yml:
+        yml += f'\n{key}: {"true" if "disabled" in key else "false"}\n'
 
 open("${OPENSEARCH_YML}", "w").write(yml)
 print("  opensearch.yml atualizado.")
 PYEOF
 
-chown -R opensearch:opensearch "${OPENSEARCH_DIR}"
+# Cria unit systemd para o tarball (não vem com o pacote apt)
+cat > /etc/systemd/system/opensearch.service <<EOF
+[Unit]
+Description=OpenSearch ${OS_VERSION} (tarball)
+Wants=network-online.target
+After=network-online.target
 
-# ─────────────────────────────────────────────────────────────────────
-echo "[7/12] Ajustando kernel para OpenSearch"
-cat > /etc/sysctl.d/99-opensearch.conf <<EOF
-vm.max_map_count=262144
+[Service]
+Type=simple
+RuntimeDirectory=opensearch
+WorkingDirectory=${OS_INSTALL_DIR}
+Environment=OPENSEARCH_HOME=${OS_INSTALL_DIR}
+Environment=OPENSEARCH_PATH_CONF=${OS_INSTALL_DIR}/config
+Environment=OPENSEARCH_JAVA_HOME=${OS_INSTALL_DIR}/jdk
+ExecStart=${OS_INSTALL_DIR}/bin/opensearch
+User=opensearch
+Group=opensearch
+LimitNOFILE=65536
+LimitNPROC=4096
+LimitMEMLOCK=infinity
+StandardOutput=journal
+StandardError=inherit
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
 EOF
-sysctl --system -q
 
-systemctl enable opensearch
-systemctl restart opensearch
-wait_service "OpenSearch" 40
-
-if curl -sf http://127.0.0.1:9200 > /dev/null 2>&1; then
-  echo "  -> OpenSearch OK (porta 9200 respondendo)"
-else
-  echo "  [AVISO] OpenSearch nao responde na porta 9200 ainda."
-  echo "  Verifique: journalctl -u opensearch -n 40 --no-pager"
-fi
+systemctl daemon-reload
 
 # ─────────────────────────────────────────────────────────────────────
 # GRAYLOG 6.x
