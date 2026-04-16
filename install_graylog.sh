@@ -3,13 +3,13 @@ set -euo pipefail
 
 # =====================================================================
 # Script: install_graylog_compat.sh
-# Graylog 6.x + MongoDB 8.0 + OpenSearch 2.19.1
+# Graylog 7.0 + MongoDB 8.0 + OpenSearch 2.19.1
 # Debian 13 Trixie - SEM Docker - dados em /srv
 # Senha admin: @123Mudar
 #
-# MongoDB 8.0 : repo bookworm, chave SHA-256 (pgp.mongodb.com)
-# OpenSearch  : tarball 2.19.1 -- chave apt usa SHA-1, rejeitada no Trixie
-# Graylog 6.x : .deb extraido com trixie->bookworm corrigido
+# MongoDB 8.0 : repo bookworm, chave SHA-256 (mongodb.org/static/pgp)
+# OpenSearch  : tarball 2.19.1 -- apt SHA-1 rejeitado no Trixie
+# Graylog 7.0 : dpkg -i direto -- repo usa "stable", nao lsb_release
 # =====================================================================
 
 ADMIN_PASS='@123Mudar'
@@ -21,7 +21,7 @@ GRAYLOG_DIR="${BASE_DIR}/graylog"
 MONGO_DIR="${BASE_DIR}/mongodb"
 OPENSEARCH_DIR="${BASE_DIR}/opensearch"
 
-GRAYLOG_MAJOR="6"
+GRAYLOG_MAJOR="7.0"
 OS_VERSION="2.19.1"
 OS_INSTALL_DIR="/opt/opensearch"
 
@@ -32,13 +32,13 @@ wait_service() {
   sleep "${seconds}"
 }
 
-check_service() {
+check_port() {
   local name="$1" port="$2"
   if ss -tlnp | grep -q ":${port}"; then
     echo "  -> ${name} OK (porta ${port} em escuta)"
   else
     echo "  [AVISO] ${name} nao responde na porta ${port}."
-    echo "  Verifique: journalctl -u ${name} -n 40 --no-pager"
+    echo "  Verifique: journalctl -u ${name} -n 50 --no-pager"
   fi
 }
 
@@ -46,25 +46,28 @@ check_service() {
 [[ "${EUID}" -ne 0 ]] && { echo "[ERRO] Execute como root."; exit 1; }
 
 echo "================================================================"
-echo " Graylog ${GRAYLOG_MAJOR}.x -- Instalacao lab Debian 13 Trixie"
+echo " Graylog ${GRAYLOG_MAJOR} -- Instalacao lab Debian 13 Trixie"
 echo " MongoDB 8.0 (apt/bookworm) + OpenSearch ${OS_VERSION} (tarball)"
 echo "================================================================"
 
-# ---------------------------------------------------------------------
+# =====================================================================
 echo "[1/12] Preparando sistema"
+# =====================================================================
 export DEBIAN_FRONTEND=noninteractive
 
-# Remove repos MongoDB e OpenSearch antigos ANTES do primeiro apt update
-# Chaves SHA-1 do 6.0 e 7.0 sao rejeitadas pelo sqv do Debian 13 Trixie
+# Remove TODOS os repos problematicos ANTES do primeiro apt update
+# MongoDB 6.0/7.0 e OpenSearch apt usam chave SHA-1, rejeitada no Trixie
 rm -f \
   /etc/apt/sources.list.d/mongodb-org-6.list \
   /etc/apt/sources.list.d/mongodb-org-7.list \
   /etc/apt/sources.list.d/mongodb-org-8.0.list \
   /etc/apt/sources.list.d/opensearch-2.x.list \
+  /etc/apt/sources.list.d/graylog.list \
   /usr/share/keyrings/mongodb-org-6.gpg \
   /usr/share/keyrings/mongodb-org-7.gpg \
   /usr/share/keyrings/mongodb-server-8.0.gpg \
   /usr/share/keyrings/opensearch.gpg \
+  /usr/share/keyrings/graylog-keyring.gpg \
   /etc/apt/trusted.gpg.d/mongodb-org-6.gpg \
   /etc/apt/trusted.gpg.d/mongodb-org-7.gpg \
   /etc/apt/trusted.gpg.d/opensearch.gpg 2>/dev/null || true
@@ -74,31 +77,34 @@ apt-get install -y \
   ca-certificates curl gnupg lsb-release \
   apt-transport-https pwgen wget python3 iproute2
 
-# ---------------------------------------------------------------------
+# =====================================================================
 echo "[2/12] Ajustando timezone"
+# =====================================================================
 timedatectl set-timezone "${TIMEZONE}" || true
 
-# ---------------------------------------------------------------------
+# =====================================================================
 echo "[3/12] Criando estrutura em /srv"
+# =====================================================================
 mkdir -p "${GRAYLOG_DIR}"/{etc,data,logs,journal}
 mkdir -p "${MONGO_DIR}/data"
 mkdir -p "${OPENSEARCH_DIR}/data"
 
-# ---------------------------------------------------------------------
+# =====================================================================
 echo "[4/12] Instalando Java 17"
+# =====================================================================
+# openjdk-11 nao existe no Trixie; 17 e o minimo para Graylog 7+
 apt-get install -y openjdk-17-jre-headless || \
   apt-get install -y default-jre-headless
 java -version 2>&1 | head -1
 
-# ---------------------------------------------------------------------
-# MONGODB 8.0
-# Chave: pgp.mongodb.com/server-8.0.asc (SHA-256 -- compativel com Trixie)
-# Repo : bookworm/mongodb-org/8.0 (trixie nao existe nos dists do MongoDB)
-# ---------------------------------------------------------------------
+# =====================================================================
 echo "[5/12] Instalando MongoDB 8.0"
+# =====================================================================
+# Chave SHA-256 -- unica versao compativel com sqv do Debian 13 Trixie
+# Repo bookworm -- trixie nao existe nos dists do MongoDB
 
 MONGO_GPG="/usr/share/keyrings/mongodb-server-8.0.gpg"
-curl -fsSL https://pgp.mongodb.com/server-8.0.asc \
+curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc \
   | gpg --dearmor -o "${MONGO_GPG}"
 
 cat > /etc/apt/sources.list.d/mongodb-org-8.0.list <<EOF
@@ -108,6 +114,7 @@ EOF
 apt-get update -qq
 apt-get install -y mongodb-org
 
+# Ajusta dbPath via python3 (evita sed fragil no YAML indentado)
 python3 - <<PYEOF
 import re
 conf = open("/etc/mongod.conf").read()
@@ -120,23 +127,22 @@ chown -R mongodb:mongodb "${MONGO_DIR}"
 systemctl enable mongod
 systemctl restart mongod
 wait_service "MongoDB" 10
-check_service "mongod" "27017"
+check_port "mongod" "27017"
 
-# ---------------------------------------------------------------------
-# OPENSEARCH 2.19.1 -- tarball
-# Chave apt usa SHA-1, rejeitada no Trixie desde 2026-02-01
-# Tarball inclui JDK proprio -- nao depende do Java do sistema
-# Seguranca desabilitada (lab only)
-# ---------------------------------------------------------------------
+# =====================================================================
 echo "[6/12] Instalando OpenSearch ${OS_VERSION} via tarball"
+# =====================================================================
+# Chave apt do OpenSearch usa SHA-1 -- rejeitada no Trixie desde 2026-02-01
+# Tarball inclui JDK proprio -- nao depende do Java do sistema
+# Seguranca desabilitada (lab only -- nunca em producao)
 
 OS_TARBALL="opensearch-${OS_VERSION}-linux-x64.tar.gz"
 OS_URL="https://artifacts.opensearch.org/releases/bundle/opensearch/${OS_VERSION}/${OS_TARBALL}"
 OS_DATA_DIR="${OPENSEARCH_DIR}/data"
 OS_LOG_DIR="/var/log/opensearch"
 
-echo "  -> Baixando OpenSearch ${OS_VERSION} (~600MB)..."
-wget -qO "/tmp/${OS_TARBALL}" "${OS_URL}"
+echo "  -> Baixando OpenSearch ${OS_VERSION} (~600MB, aguarde)..."
+wget -q --show-progress -O "/tmp/${OS_TARBALL}" "${OS_URL}"
 
 rm -rf "${OS_INSTALL_DIR}"
 mkdir -p "${OS_INSTALL_DIR}"
@@ -153,6 +159,7 @@ chown -R opensearch:opensearch \
   "${OS_DATA_DIR}" \
   "${OS_LOG_DIR}"
 
+# Configura opensearch.yml via python3 (seguro para YAML)
 OPENSEARCH_YML="${OS_INSTALL_DIR}/config/opensearch.yml"
 
 python3 - <<PYEOF
@@ -176,6 +183,7 @@ for pattern, replacement in settings.items():
     else:
         yml += f'\n{replacement}\n'
 
+# Desabilita seguranca -- lab only
 extras = {
     'plugins.security.disabled': 'true',
     'plugins.security.ssl.http.enabled': 'false',
@@ -220,8 +228,9 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 
-# ---------------------------------------------------------------------
+# =====================================================================
 echo "[7/12] Ajustando kernel para OpenSearch"
+# =====================================================================
 cat > /etc/sysctl.d/99-opensearch.conf <<EOF
 vm.max_map_count=262144
 EOF
@@ -230,41 +239,33 @@ sysctl --system -q
 systemctl daemon-reload
 systemctl enable opensearch
 systemctl restart opensearch
-wait_service "OpenSearch" 40
+wait_service "OpenSearch" 45
 
 if curl -sf http://127.0.0.1:9200 > /dev/null 2>&1; then
   echo "  -> OpenSearch OK (porta 9200 respondendo)"
 else
   echo "  [AVISO] OpenSearch ainda nao responde na porta 9200."
-  echo "  Verifique: journalctl -u opensearch -n 40 --no-pager"
+  echo "  Verifique: journalctl -u opensearch -n 50 --no-pager"
 fi
 
-# ---------------------------------------------------------------------
-# GRAYLOG 6.x
-# O .deb do repo usa lsb_release -sc = "trixie" que nao existe.
-# Extraimos, corrigimos trixie->bookworm e copiamos manualmente.
-# ---------------------------------------------------------------------
-echo "[8/12] Instalando Graylog ${GRAYLOG_MAJOR}.x"
+# =====================================================================
+echo "[8/12] Instalando Graylog ${GRAYLOG_MAJOR}"
+# =====================================================================
+# O .deb do Graylog 7.0 configura o repo com "stable" no sources.list,
+# nao usa lsb_release -sc -- funciona no Trixie sem correcao.
 
-GRAYLOG_REPO_DEB="/tmp/graylog-repo.deb"
-GRAYLOG_REPO_EXTRACT="/tmp/graylog-repo-extracted"
+rm -f /tmp/graylog-repo.deb \
+      /etc/apt/sources.list.d/graylog*.list \
+      /usr/share/keyrings/graylog*.gpg \
+      /etc/apt/trusted.gpg.d/graylog*.gpg 2>/dev/null || true
 
-rm -rf "${GRAYLOG_REPO_EXTRACT}"
-wget -qO "${GRAYLOG_REPO_DEB}" \
-  "https://packages.graylog2.org/repo/packages/graylog-${GRAYLOG_MAJOR}.x-repository_latest.deb"
+echo "  -> Baixando repo Graylog ${GRAYLOG_MAJOR}..."
+wget -qO /tmp/graylog-repo.deb \
+  "https://packages.graylog2.org/repo/packages/graylog-${GRAYLOG_MAJOR}-repository_latest.deb"
 
-dpkg-deb -x "${GRAYLOG_REPO_DEB}" "${GRAYLOG_REPO_EXTRACT}/"
+dpkg -i /tmp/graylog-repo.deb
 
-find "${GRAYLOG_REPO_EXTRACT}" -name "*.list" \
-  -exec sed -i 's/trixie/bookworm/g' {} \;
-
-find "${GRAYLOG_REPO_EXTRACT}" -path "*/sources.list.d/*.list" \
-  -exec cp -f {} /etc/apt/sources.list.d/ \; 2>/dev/null || true
-find "${GRAYLOG_REPO_EXTRACT}" -path "*/keyrings/*.gpg" \
-  -exec cp -f {} /usr/share/keyrings/ \; 2>/dev/null || true
-find "${GRAYLOG_REPO_EXTRACT}" -path "*/trusted.gpg.d/*.gpg" \
-  -exec cp -f {} /etc/apt/trusted.gpg.d/ \; 2>/dev/null || true
-
+# Garante bookworm caso o .deb tenha inserido trixie em alguma linha
 for f in /etc/apt/sources.list.d/graylog*.list; do
   [[ -f "${f}" ]] && sed -i 's/trixie/bookworm/g' "${f}"
 done
@@ -272,13 +273,15 @@ done
 apt-get update -qq
 apt-get install -y graylog-server
 
-# ---------------------------------------------------------------------
+# =====================================================================
 echo "[9/12] Configurando Graylog"
+# =====================================================================
 GRAYLOG_CONF="/etc/graylog/server/server.conf"
 
 PASSWORD_SECRET="$(pwgen -N 1 -s 96)"
 ROOT_SHA2="$(printf '%s' "${ADMIN_PASS}" | sha256sum | awk '{print $1}')"
 
+# Seta chave=valor -- cobre linhas comentadas (#chave = ...) e ausentes
 set_conf() {
   local key="$1" value="$2"
   if grep -qE "^#?\s*${key}\s*=" "${GRAYLOG_CONF}"; then
@@ -295,6 +298,8 @@ set_conf "http_publish_uri"    "http://${SERVER_IP}:9000/"
 set_conf "elasticsearch_hosts" "http://127.0.0.1:9200"
 set_conf "message_journal_dir" "${GRAYLOG_DIR}/journal"
 
+# Libera /srv para o processo graylog via override systemd
+# (mais seguro que symlink -- evita conflito com ProtectPaths do unit)
 mkdir -p /etc/systemd/system/graylog-server.service.d
 cat > /etc/systemd/system/graylog-server.service.d/override.conf <<EOF
 [Service]
@@ -303,29 +308,33 @@ EOF
 
 chown -R graylog:graylog "${GRAYLOG_DIR}"
 
-# ---------------------------------------------------------------------
+# =====================================================================
 echo "[10/12] Habilitando servicos"
+# =====================================================================
 systemctl daemon-reload
 systemctl enable mongod opensearch graylog-server
 
-# ---------------------------------------------------------------------
+# =====================================================================
 echo "[11/12] Reiniciando servicos na ordem correta"
+# =====================================================================
 systemctl restart mongod
 wait_service "MongoDB (restart final)" 8
 
 systemctl restart opensearch
-wait_service "OpenSearch (restart final)" 40
+wait_service "OpenSearch (restart final)" 45
 
 systemctl restart graylog-server
-wait_service "Graylog" 35
+wait_service "Graylog" 40
 
-# ---------------------------------------------------------------------
+# =====================================================================
 echo "[12/12] Status dos servicos"
+# =====================================================================
 for svc in mongod opensearch graylog-server; do
   echo "--- ${svc} ---"
   systemctl --no-pager status "${svc}" --lines=5 || true
 done
 
+# Testa API Graylog na porta 9000
 if curl -sf "http://127.0.0.1:9000/api" > /dev/null 2>&1; then
   echo "  -> Graylog API OK"
 else
@@ -335,17 +344,19 @@ fi
 
 echo
 echo "================================================================"
-echo " Instalacao concluida -- Graylog ${GRAYLOG_MAJOR}.x (sem Docker)"
+echo " Instalacao concluida -- Graylog ${GRAYLOG_MAJOR} (sem Docker)"
 echo
-echo "  Interface       : http://${SERVER_IP}:9000"
-echo "  Usuario         : admin"
-echo "  Senha           : ${ADMIN_PASS}"
+echo "  Interface        : http://${SERVER_IP}:9000"
+echo "  Usuario          : admin"
+echo "  Senha            : ${ADMIN_PASS}"
 echo
-echo "  Logs Graylog    : journalctl -u graylog-server -f"
-echo "  Logs OpenSearch : journalctl -u opensearch -f"
-echo "  Logs MongoDB    : journalctl -u mongod -f"
-echo "  Config Graylog  : ${GRAYLOG_CONF}"
+echo "  Logs Graylog     : journalctl -u graylog-server -f"
+echo "  Logs OpenSearch  : journalctl -u opensearch -f"
+echo "  Logs MongoDB     : journalctl -u mongod -f"
+echo
+echo "  Config Graylog   : ${GRAYLOG_CONF}"
 echo "  Config OpenSearch: ${OS_INSTALL_DIR}/config/opensearch.yml"
+echo "  Config MongoDB   : /etc/mongod.conf"
 echo
-echo "  ATENCAO: lab only. Altere a senha apos o primeiro login."
+echo "  ATENCAO: ambiente de lab. Altere a senha apos o primeiro login."
 echo "================================================================"
