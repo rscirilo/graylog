@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+script = r'''#!/usr/bin/env bash
 set -euo pipefail
 
 # =====================================================================
@@ -12,11 +12,10 @@ set -euo pipefail
 #   OpenSearch apt usa chave SHA-1, rejeitada no Trixie. Usamos tarball.
 #   Graylog 5.x suporta MongoDB 4.4 e OpenSearch 2.x.
 #
-# Compatibilidade:
-#   Graylog 5.2   -> MongoDB 4.4 - 6.x  -> OK
-#   Graylog 5.2   -> OpenSearch 1.x/2.x -> OK
-#   MongoDB 4.4   -> sem AVX             -> OK
-#   OpenSearch 2.19.1 tarball -> sem AVX -> OK
+# Nomes de pacotes corrigidos para Debian 13 Trixie:
+#   libcurl4    -> libcurl4t64
+#   libssl3     -> libssl3t64
+#   libldap-2.5-0 / libldap-2.6-0 -> libldap2
 # =====================================================================
 
 ADMIN_PASS='@123Mudar'
@@ -78,7 +77,7 @@ rm -f \
   /etc/apt/trusted.gpg.d/mongodb-org-*.gpg \
   /etc/apt/trusted.gpg.d/opensearch.gpg 2>/dev/null || true
 
-# Remove mongodb-org se instalado de tentativa anterior
+# Remove mongodb-org de tentativa anterior (exige AVX, incompativel)
 if dpkg -l 2>/dev/null | grep -q mongodb-org; then
   echo "  -> Removendo mongodb-org anterior (incompativel sem AVX)..."
   systemctl stop mongod 2>/dev/null || true
@@ -89,11 +88,13 @@ if dpkg -l 2>/dev/null | grep -q mongodb-org; then
 fi
 
 apt-get update -qq
+
+# Nomes corretos para Debian 13 Trixie (t64 = transicao para 64-bit time_t)
 apt-get install -y \
-  ca-certificates curl gnupg lsb-release libcurl4 \
+  ca-certificates curl gnupg lsb-release \
   apt-transport-https pwgen wget python3 iproute2 \
-  libgssapi-krb5-2 libldap-2.5-0 libwrap0 \
-  libssl3 liblzma5 libsasl2-2
+  libcurl4t64 libssl3t64 libldap2 \
+  libgssapi-krb5-2 libwrap0 libsasl2-2 liblzma5
 
 # =====================================================================
 echo "[2/13] Ajustando timezone"
@@ -118,32 +119,28 @@ java -version 2>&1 | head -1
 echo "[5/13] Instalando MongoDB ${MONGO_VERSION} via tarball (sem AVX)"
 # =====================================================================
 # MongoDB 4.4 = ultima versao sem exigencia de AVX
-# Tarball para Debian 10 (buster) roda em Trixie sem problema
+# Tarball debian10 roda em Trixie (libc compativel)
 
 MONGO_TARBALL="mongodb-linux-x86_64-debian10-${MONGO_VERSION}.tgz"
 MONGO_URL="https://fastdl.mongodb.org/linux/${MONGO_TARBALL}"
 
-echo "  -> Baixando MongoDB ${MONGO_VERSION}..."
-wget -qO "/tmp/${MONGO_TARBALL}" "${MONGO_URL}"
+echo "  -> Baixando MongoDB ${MONGO_VERSION} (~80MB)..."
+wget -q --show-progress -O "/tmp/${MONGO_TARBALL}" "${MONGO_URL}"
 
 rm -rf "${MONGO_INSTALL_DIR}"
 mkdir -p "${MONGO_INSTALL_DIR}"
 tar -xzf "/tmp/${MONGO_TARBALL}" -C "${MONGO_INSTALL_DIR}" --strip-components=1
 rm -f "/tmp/${MONGO_TARBALL}"
 
-# Cria usuario mongodb se nao existir
 if ! id mongodb &>/dev/null; then
   useradd -r -s /sbin/nologin -d "${MONGO_INSTALL_DIR}" mongodb
 fi
 
-# Cria links simbolicos dos binarios
-ln -sf "${MONGO_INSTALL_DIR}/bin/mongod"  /usr/local/bin/mongod
-ln -sf "${MONGO_INSTALL_DIR}/bin/mongos"  /usr/local/bin/mongos
+ln -sf "${MONGO_INSTALL_DIR}/bin/mongod" /usr/local/bin/mongod
+ln -sf "${MONGO_INSTALL_DIR}/bin/mongos" /usr/local/bin/mongos
 
-mkdir -p "${MONGO_DIR}"/{data,logs}
 chown -R mongodb:mongodb "${MONGO_DIR}" "${MONGO_INSTALL_DIR}"
 
-# Arquivo de configuracao do MongoDB 4.4
 cat > /etc/mongod.conf <<EOF
 systemLog:
   destination: file
@@ -163,7 +160,6 @@ net:
   bindIp: 127.0.0.1
 EOF
 
-# Unit systemd para MongoDB tarball
 cat > /etc/systemd/system/mongod.service <<EOF
 [Unit]
 Description=MongoDB ${MONGO_VERSION} (tarball, sem AVX)
@@ -199,6 +195,7 @@ echo "[6/13] Instalando OpenSearch ${OS_VERSION} via tarball"
 # =====================================================================
 # Chave apt do OpenSearch usa SHA-1 -- rejeitada no Trixie desde 2026-02-01
 # Tarball inclui JDK proprio -- nao depende do Java do sistema
+# Seguranca desabilitada (lab only -- nunca em producao)
 
 OS_TARBALL="opensearch-${OS_VERSION}-linux-x64.tar.gz"
 OS_URL="https://artifacts.opensearch.org/releases/bundle/opensearch/${OS_VERSION}/${OS_TARBALL}"
@@ -310,8 +307,8 @@ fi
 # =====================================================================
 echo "[8/13] Instalando Graylog ${GRAYLOG_MAJOR}.x"
 # =====================================================================
-# Graylog 5.x suporta MongoDB 4.4 e OpenSearch 2.x
-# O .deb configura o repo com "stable" -- nao usa lsb_release
+# Graylog 5.x: suporta MongoDB 4.4 e OpenSearch 2.x
+# .deb configura repo com "stable" -- nao usa lsb_release
 
 rm -f /tmp/graylog-repo.deb \
       /etc/apt/sources.list.d/graylog*.list \
@@ -393,7 +390,8 @@ if curl -sf "http://127.0.0.1:9000/api" > /dev/null 2>&1; then
   echo "  -> Graylog API OK (porta 9000)"
 else
   echo "  [AVISO] Graylog ainda nao responde na porta 9000."
-  echo "  Verifique: journalctl -u graylog-server -n 50 --no-pager"
+  echo "  Aguarde mais 30s e tente: curl -s http://127.0.0.1:9000/api"
+  echo "  Ou verifique: journalctl -u graylog-server -n 50 --no-pager"
 fi
 
 # =====================================================================
@@ -420,7 +418,18 @@ echo "  Config Graylog   : ${GRAYLOG_CONF}"
 echo "  Config OpenSearch: ${OS_INSTALL_DIR}/config/opensearch.yml"
 echo "  Config MongoDB   : /etc/mongod.conf"
 echo "  Binarios MongoDB : ${MONGO_INSTALL_DIR}/bin/"
-echo "  Binarios OpenSearch: ${OS_INSTALL_DIR}/bin/"
 echo
 echo "  ATENCAO: ambiente de lab. Altere a senha apos o primeiro login."
 echo "================================================================"
+'''
+
+with open('/tmp/install_graylog_compat.sh', 'w') as f:
+    f.write(script)
+
+import os, hashlib
+lines = script.count('\n')
+size = os.path.getsize('/tmp/install_graylog_compat.sh')
+sha = hashlib.sha256(script.encode()).hexdigest()
+print(f"Linhas : {lines}")
+print(f"Tamanho: {size} bytes")
+print(f"SHA256 : {sha}")
