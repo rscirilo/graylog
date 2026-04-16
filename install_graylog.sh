@@ -57,6 +57,17 @@ check_port() {
   fi
 }
 
+ensure_libssl11() {
+  if ldconfig -p 2>/dev/null | grep -q 'libcrypto.so.1.1'; then
+    echo "  -> libssl1.1 / libcrypto.so.1.1 ja presentes"
+    return 0
+  fi
+  echo "  -> Instalando libssl1.1 (libcrypto.so.1.1) do archive Debian..."
+  cd /tmp
+  wget -q http://archive.debian.org/debian-archive/debian-security/pool/updates/main/o/openssl/libssl1.1_1.1.1n-0+deb10u6_amd64.deb
+  dpkg -i libssl1.1_1.1.1n-0+deb10u6_amd64.deb
+}
+
 # ---------------------------------------------------------------------
 [[ "${EUID}" -ne 0 ]] && { echo "[ERRO] Execute como root."; exit 1; }
 
@@ -65,6 +76,9 @@ echo "================================================================"
 echo " Graylog ${GRAYLOG_MAJOR}.x + MongoDB ${MONGO_VERSION} + OpenSearch ${OS_VERSION}"
 echo " Debian 13 Trixie | SEM Docker | SEM AVX"
 echo " CPU flags: ${AVX_STATUS:-nenhuma detectada (sem AVX -- usando tarballs)}"
+if echo "${AVX_STATUS}" | grep -qi avx; then
+  echo "  (AVX detectado, mas script preparado para CPUs SEM AVX)"
+fi
 echo "================================================================"
 
 # =====================================================================
@@ -73,21 +87,16 @@ echo "[1/13] Preparando sistema"
 # =====================================================================
 export DEBIAN_FRONTEND=noninteractive
 
-# Remove repos problematicos ANTES do primeiro apt update:
-#   mongodb-org  5.0+ exige AVX -> SIGILL em VM sem AVX
-#   opensearch   apt  usa SHA-1 -> rejeitado no Trixie
-#   mongodb-org  6/7  usa SHA-1 -> rejeitado no Trixie
 rm -f \
   /etc/apt/sources.list.d/mongodb-org-*.list \
   /etc/apt/sources.list.d/opensearch-2.x.list \
   /etc/apt/sources.list.d/graylog*.list \
   /usr/share/keyrings/mongodb-*.gpg \
   /usr/share/keyrings/opensearch.gpg \
-  /usr/share/keyrings/graylog*.gpg \
+  /usr/share.keyrings/graylog*.gpg \
   /etc/apt/trusted.gpg.d/mongodb-org-*.gpg \
   /etc/apt/trusted.gpg.d/opensearch.gpg 2>/dev/null || true
 
-# Remove mongodb-org de tentativa anterior
 if dpkg -l 2>/dev/null | grep -q mongodb-org; then
   echo "  -> Removendo mongodb-org anterior (exige AVX, incompativel)..."
   systemctl stop mongod 2>/dev/null || true
@@ -99,10 +108,6 @@ fi
 
 apt-get update -qq
 
-# Nomes corretos para Debian 13 Trixie:
-#   libcurl4      -> libcurl4t64   (transicao 64-bit time_t)
-#   libssl3       -> libssl3t64
-#   libldap-2.x-0 -> libldap2
 apt-get install -y \
   ca-certificates curl gnupg lsb-release \
   apt-transport-https pwgen wget python3 iproute2 \
@@ -129,7 +134,6 @@ echo "  -> Diretorios criados em ${BASE_DIR}"
 echo ""
 echo "[4/13] Instalando Java 17"
 # =====================================================================
-# openjdk-11 nao existe no Trixie; Java 17 e o minimo para Graylog 5+
 apt-get install -y openjdk-17-jre-headless || \
   apt-get install -y default-jre-headless
 java -version 2>&1 | head -1
@@ -138,8 +142,6 @@ java -version 2>&1 | head -1
 echo ""
 echo "[5/13] Instalando MongoDB ${MONGO_VERSION} via tarball (sem AVX)"
 # =====================================================================
-# MongoDB 4.4 = ultima versao sem exigencia de AVX
-# Tarball debian10 (buster) roda em Trixie sem problema de libc
 MONGO_TARBALL="mongodb-linux-x86_64-debian10-${MONGO_VERSION}.tgz"
 MONGO_URL="https://fastdl.mongodb.org/linux/${MONGO_TARBALL}"
 
@@ -155,13 +157,16 @@ if ! id mongodb &>/dev/null; then
   useradd -r -s /sbin/nologin -d "${MONGO_INSTALL_DIR}" mongodb
 fi
 
-# Links simbolicos para /usr/local/bin
 ln -sf "${MONGO_INSTALL_DIR}/bin/mongod" /usr/local/bin/mongod
 ln -sf "${MONGO_INSTALL_DIR}/bin/mongos" /usr/local/bin/mongos
 
 chown -R mongodb:mongodb "${MONGO_DIR}" "${MONGO_INSTALL_DIR}"
 
-# Configuracao MongoDB (formato YAML)
+ensure_libssl11
+
+echo "  -> Validando dependencias do mongod (ldd)..."
+ldd /usr/local/bin/mongod || true
+
 cat > /etc/mongod.conf <<EOF
 systemLog:
   destination: file
@@ -181,7 +186,6 @@ net:
   bindIp: 127.0.0.1
 EOF
 
-# Unit systemd para MongoDB instalado via tarball
 cat > /etc/systemd/system/mongod.service <<EOF
 [Unit]
 Description=MongoDB ${MONGO_VERSION} (tarball, sem AVX)
@@ -189,12 +193,11 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
-Type=forking
+Type=simple
 User=mongodb
 Group=mongodb
-ExecStart=/usr/local/bin/mongod --config /etc/mongod.conf --fork
-ExecStop=/usr/local/bin/mongod --config /etc/mongod.conf --shutdown
-PIDFile=${MONGO_DIR}/data/mongod.pid
+ExecStart=/usr/local/bin/mongod --config /etc/mongod.conf
+ExecStop=/bin/kill -TERM $MAINPID
 LimitNOFILE=64000
 LimitNPROC=64000
 StandardOutput=journal
@@ -216,8 +219,6 @@ check_port "MongoDB" "27017"
 echo ""
 echo "[6/13] Instalando OpenSearch ${OS_VERSION} via tarball"
 # =====================================================================
-# Tarball inclui JDK proprio -- nao depende do Java do sistema
-# Seguranca desabilitada: ambiente de lab only
 OS_TARBALL="opensearch-${OS_VERSION}-linux-x64.tar.gz"
 OS_URL="https://artifacts.opensearch.org/releases/bundle/opensearch/${OS_VERSION}/${OS_TARBALL}"
 OS_DATA_DIR="${OPENSEARCH_DIR}/data"
@@ -262,7 +263,6 @@ for pattern, replacement in settings.items():
     else:
         yml += f'\\n{replacement}\\n'
 
-# Desabilita seguranca -- lab only, nunca em producao
 extras = {
     'plugins.security.disabled': 'true',
     'plugins.security.ssl.http.enabled': 'false',
@@ -278,7 +278,6 @@ open("${OPENSEARCH_YML}", "w").write(yml)
 print("  opensearch.yml atualizado.")
 PYEOF
 
-# Unit systemd para OpenSearch instalado via tarball
 cat > /etc/systemd/system/opensearch.service <<EOF
 [Unit]
 Description=OpenSearch ${OS_VERSION} (tarball)
@@ -333,12 +332,9 @@ fi
 echo ""
 echo "[8/13] Instalando Graylog ${GRAYLOG_MAJOR}.x"
 # =====================================================================
-# Graylog 5.x: suporta MongoDB 4.4-6.x e OpenSearch 1.x/2.x
-# .deb configura repo com "stable" -- nao usa lsb_release -sc
-
 rm -f /tmp/graylog-repo.deb \
       /etc/apt/sources.list.d/graylog*.list \
-      /usr/share/keyrings/graylog*.gpg \
+      /usr/share.keyrings/graylog*.gpg \
       /etc/apt/trusted.gpg.d/graylog*.gpg 2>/dev/null || true
 
 echo "  -> Baixando repo Graylog ${GRAYLOG_MAJOR}.x..."
@@ -347,7 +343,6 @@ wget -qO /tmp/graylog-repo.deb \
 
 dpkg -i /tmp/graylog-repo.deb
 
-# Garante bookworm caso o .deb tenha inserido trixie
 for f in /etc/apt/sources.list.d/graylog*.list; do
   [[ -f "${f}" ]] && sed -i 's/trixie/bookworm/g' "${f}"
 done
