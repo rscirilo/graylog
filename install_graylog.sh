@@ -77,30 +77,28 @@ java -version 2>&1 | head -1
 # ─────────────────────────────────────────────────────────────────────
 echo "[5/12] Instalando MongoDB 8.0"
 
-# Remove repos antigos (6.0 e 7.0 usam SHA-1, rejeitados no Trixie)
+# Remove qualquer repo MongoDB anterior (SHA-1 rejeitado no Trixie)
 rm -f \
   /etc/apt/sources.list.d/mongodb-org-6.list \
   /etc/apt/sources.list.d/mongodb-org-7.list \
+  /etc/apt/sources.list.d/mongodb-org-8.0.list \
   /usr/share/keyrings/mongodb-org-6.gpg \
   /usr/share/keyrings/mongodb-org-7.gpg \
-  /etc/apt/trusted.gpg.d/mongodb-org-6.gpg \
-  /etc/apt/trusted.gpg.d/mongodb-org-7.gpg 2>/dev/null || true
+  /usr/share/keyrings/mongodb-server-8.0.gpg \
+  /etc/apt/trusted.gpg.d/mongodb-org-*.gpg 2>/dev/null || true
 
 MONGO_GPG="/usr/share/keyrings/mongodb-server-8.0.gpg"
-if [[ ! -f "${MONGO_GPG}" ]]; then
-  curl -fsSL https://pgp.mongodb.com/server-8.0.asc \
-    | gpg --dearmor -o "${MONGO_GPG}"
-fi
+curl -fsSL https://pgp.mongodb.com/server-8.0.asc \
+  | gpg --dearmor -o "${MONGO_GPG}"
 
-# Repo nativo trixie (MongoDB 8.0 suporta Debian 13 diretamente)
+# IMPORTANTE: bookworm — trixie nao existe nos dists do repo MongoDB
 cat > /etc/apt/sources.list.d/mongodb-org-8.0.list <<EOF
-deb [ arch=amd64,arm64 signed-by=${MONGO_GPG} ] https://repo.mongodb.org/apt/debian trixie/mongodb-org/8.0 main
+deb [ arch=amd64,arm64 signed-by=${MONGO_GPG} ] https://repo.mongodb.org/apt/debian bookworm/mongodb-org/8.0 main
 EOF
 
 apt-get update -qq
 apt-get install -y mongodb-org
 
-# Ajusta dbPath via python3 (evita sed fragil no YAML indentado)
 python3 - <<PYEOF
 import re
 conf = open("/etc/mongod.conf").read()
@@ -113,7 +111,7 @@ chown -R mongodb:mongodb "${MONGO_DIR}"
 systemctl enable mongod
 systemctl restart mongod
 wait_service "MongoDB" 10
-check_service "mongod" "27017"
+check_service "mongod" "27017""
 
 # ─────────────────────────────────────────────────────────────────────
 # OPENSEARCH 2.x
