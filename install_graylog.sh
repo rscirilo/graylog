@@ -52,7 +52,7 @@ if ! test -f /etc/apt/trusted.gpg.d/mongodb-org-6.gpg; then
 fi
 
 cat >/etc/apt/sources.list.d/mongodb-org-6.list <<EOF
-deb [ arch=amd64,arm64 signed-by=/etc/apt/trusted.gpg.d/mongodb-org-6.gpg ] https://repo.mongodb.org/apt/debian $(lsb_release -sc)/mongodb-org/6.0 main
+deb [ arch=amd64,arm64 signed-by=/etc/apt/trusted.gpg.d/mongodb-org-6.gpg ] https://repo.mongodb.org/apt/debian bookworm/mongodb-org/6.0 main
 EOF
 
 apt update
