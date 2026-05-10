@@ -132,10 +132,10 @@ echo "  -> Diretorios criados em ${BASE_DIR}"
 
 # =====================================================================
 echo ""
-echo "[4/13] Instalando Java 17"
+echo "[4/13] Instalando Java"
 # =====================================================================
-apt-get install -y openjdk-17-jre-headless || \
-  apt-get install -y default-jre-headless
+apt-get install -y openjdk-17-jre-headless || true
+apt-get install -y default-jre-headless
 java -version 2>&1 | head -1
 
 # =====================================================================
@@ -186,9 +186,9 @@ net:
   bindIp: 127.0.0.1
 EOF
 
-cat > /etc/systemd/system/mongod.service <<EOF
+cat > /etc/systemd/system/mongod.service <<'EOF'
 [Unit]
-Description=MongoDB ${MONGO_VERSION} (tarball, sem AVX)
+Description=MongoDB 4.4.x (tarball, sem AVX)
 Wants=network-online.target
 After=network-online.target
 
@@ -278,20 +278,20 @@ open("${OPENSEARCH_YML}", "w").write(yml)
 print("  opensearch.yml atualizado.")
 PYEOF
 
-cat > /etc/systemd/system/opensearch.service <<EOF
+cat > /etc/systemd/system/opensearch.service <<'EOF'
 [Unit]
-Description=OpenSearch ${OS_VERSION} (tarball)
+Description=OpenSearch 2.x (tarball)
 Wants=network-online.target
 After=network-online.target
 
 [Service]
 Type=simple
 RuntimeDirectory=opensearch
-WorkingDirectory=${OS_INSTALL_DIR}
-Environment=OPENSEARCH_HOME=${OS_INSTALL_DIR}
-Environment=OPENSEARCH_PATH_CONF=${OS_INSTALL_DIR}/config
-Environment=OPENSEARCH_JAVA_HOME=${OS_INSTALL_DIR}/jdk
-ExecStart=${OS_INSTALL_DIR}/bin/opensearch
+WorkingDirectory=/opt/opensearch
+Environment=OPENSEARCH_HOME=/opt/opensearch
+Environment=OPENSEARCH_PATH_CONF=/opt/opensearch/config
+Environment=OPENSEARCH_JAVA_HOME=/opt/opensearch/jdk
+ExecStart=/opt/opensearch/bin/opensearch
 User=opensearch
 Group=opensearch
 LimitNOFILE=65536
