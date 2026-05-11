@@ -362,4 +362,15 @@ sleep 30
 curl -s -o /dev/null -w "%{http_code}" http://localhost:9000/api/system/lbstatus
 ```
 
+## Instalação rápida com script
+
+Na VM Debian 13 (Trixie):
+
+```bash
+cd /srv
+wget https://raw.githubusercontent.com/rscirilo/graylog/main/install_graylog4.sh
+chmod +x install_graylog4.sh
+sudo ./install_graylog4.sh
+```
+
 ---
