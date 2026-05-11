@@ -2,6 +2,8 @@
 ### Aluno: Rodrigo Cirilo
 ### Tec. em Redes de Computadores
 
+Repositório oficial deste guia e script: [github.com/rscirilo/graylog](https://github.com/rscirilo/graylog)
+
 Automação de instalação do Graylog no Debian 13 (Trixie), com foco em laboratório, testes e documentação acadêmica do Projeto Integrador do IFRN.
 
 # Guia de Instalação – Graylog 4.3 + MongoDB 4.4 + Elasticsearch 7.10.2  
