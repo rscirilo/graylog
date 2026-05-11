@@ -4,279 +4,363 @@
 
 Automação de instalação do Graylog no Debian 13 (Trixie), com foco em laboratório, testes e documentação acadêmica do Projeto Integrador do IFRN.
 
-Este repositório foi criado para facilitar a implantação do Graylog com poucos comandos, mantendo os arquivos, dados e logs dentro de `/srv`.
+# Guia de Instalação – Graylog 4.3 + MongoDB 4.4 + Elasticsearch 7.10.2  
+Ambiente: Debian 13 (Trixie) sem AVX – IFRN Parnamirim
+
+Este guia foi pensado para o pessoal do IFRN (curso Técnico Subsequente em Redes) instalar o Graylog **copiando e colando comandos**, em uma VM Debian 13 (Trixie) sem suporte a AVX.
+
+> Resultado final: Graylog 4.3 rodando em `http://IP_DA_VM:9000`  
+> Usuário: `admin`  
+> Senha: `integrador2026`
 
 ---
 
-## Objetivo
+## 1. Pré‑requisitos da VM
 
-O objetivo deste projeto é disponibilizar scripts para instalação automatizada do Graylog em ambiente Debian, reduzindo a configuração manual e facilitando a reprodução do ambiente em laboratório.
+- Sistema: **Debian 13 (Trixie)** 64 bits.
+- CPU: sem suporte a AVX (laboratório IFRN).
+- A VM deve ter:
+  - Pelo menos **2 vCPUs**.
+  - Pelo menos **4 GB de RAM** (recomendado 6–8 GB).
+  - Pelo menos **30 GB de disco**.
+- Ter acesso à Internet para baixar pacotes.
 
-A proposta também serve como apoio para estudos de:
-
-- Centralização de logs
-- Observabilidade
-- Monitoramento
-- Segurança
-- Documentação técnica
-
----
-
-## Cenários do projeto
-
-Este repositório foi pensado para dois cenários:
-
-### 1. Ambiente sem AVX
-Versão indicada para VMs ou processadores que não possuem suporte a AVX.
-
-Exemplo de stack:
-- Graylog 4.3.15
-- MongoDB 4.4.29
-- OpenSearch 1.3.14
-
-### 2. Ambiente com AVX
-Versão indicada para máquinas que possuem suporte a AVX e podem usar componentes mais novos.
-
-Exemplo de stack:
-- Graylog 5.x
-- MongoDB 6.x
-- OpenSearch 2.x
-
----
-
-## Requisitos
-
-### Requisitos mínimos
-
-- Debian 13 (Trixie)
-- Arquitetura `x86_64`
-- Acesso com usuário que tenha permissão de `sudo`
-- Internet para download dos pacotes e artefatos
-- Espaço livre em `/srv`
-
-### Recursos recomendados
-
-Para laboratório:
-- 2 vCPU
-- 4 GB de RAM
-- 20 GB de disco livre
-
-Para uso mais estável:
-- 4 vCPU
-- 8 GB de RAM ou mais
-
----
-
-## Preparação inicial
-
-Antes de executar os scripts, atualize o sistema e instale o Git.
-
-### 1. Atualizar a lista de pacotes
+Verificar versão do sistema:
 
 ```bash
-sudo apt update
+lsb_release -a && uname -m
 ```
 
-Esse comando atualiza a lista de pacotes disponíveis no Debian.
-
-### 2. Atualizar os pacotes instalados
-
-```bash
-sudo apt upgrade -y
-```
-
-Esse comando instala as atualizações disponíveis no sistema.
-
-### 3. Instalar o Git
-
-```bash
-sudo apt install git -y
-```
-
-O Git será usado para clonar o repositório do projeto.
+O esperado é algo como: `Debian GNU/Linux 13 (trixie)` e `x86_64`.
 
 ---
 
-## Clonando o repositório
-
-Depois de instalar o Git, entre no diretório `/srv` e clone o projeto.
-
-### 1. Ir para `/srv`
+## 2. Atualizar o sistema
 
 ```bash
-cd /srv
+sudo apt-get update
+sudo apt-get upgrade -y
 ```
 
-O comando `cd` serve para trocar de diretório no terminal.
-
-### 2. Clonar o repositório
+Instalar utilitários básicos:
 
 ```bash
-git clone https://github.com/rscirilo/graylog.git
-```
-
-Esse comando cria uma cópia local do repositório em uma pasta chamada `graylog`.
-
-### 3. Entrar no diretório do projeto
-
-```bash
-cd graylog
-```
-
-Agora você estará dentro da pasta do projeto.
-
----
-
-## Execução dos scripts
-
-### Script para ambiente sem AVX
-
-Use este script quando a VM ou o processador não possuir suporte a AVX.
-
-```bash
-chmod +x install_graylog.sh
-sudo ./install_graylog.sh
-```
-
-### Script para ambiente com AVX
-
-Use este script quando a máquina possuir suporte a AVX.
-
-```bash
-chmod +x install_graylog_avx.sh
-sudo ./install_graylog_avx.sh
+sudo apt-get install -y curl wget nano pwgen gnupg apt-transport-https ca-certificates lsb-release net-tools
 ```
 
 ---
 
-## O que os scripts fazem
+## 3. Instalar MongoDB 4.4 via arquivos .deb
 
-De forma geral, os scripts executam as seguintes etapas:
+Como o servidor do laboratório **não tem AVX**, não podemos usar MongoDB 5 ou 7.  
+Vamos instalar o **MongoDB 4.4.30** usando pacotes `.deb` locais.
 
-1. Fazem a pré-checagem do ambiente
-2. Instalam dependências básicas
-3. Configuram o Java
-4. Instalam o MongoDB
-5. Instalam o OpenSearch
-6. Instalam o Graylog
-7. Criam serviços `systemd`
-8. Mantêm os dados em `/srv`
-
----
-
-## Estrutura esperada
-
-Exemplo de diretórios criados pelo script:
+### 3.1. Criar pasta para os pacotes
 
 ```bash
-/srv/graylog4
-├── config
-├── data
-├── downloads
-├── graylog
-├── java
-├── log
-├── mongodb
-├── opensearch
-└── run
+sudo mkdir -p /srv/mongodb-debs
+cd /srv/mongodb-debs
 ```
 
-Em versões mais novas, a estrutura pode variar para algo como:
+### 3.2. Baixar os pacotes necessários (Debian 11 – compatível)
 
 ```bash
-/srv/graylog5
-├── config
-├── data
-├── downloads
-├── graylog
-├── java
-├── log
-├── mongodb
-├── opensearch
-└── run
+sudo wget https://repo.mongodb.org/apt/debian/dists/bullseye/mongodb-org/4.4/main/binary-amd64/libssl1.1_1.1.1n-0+deb11u5_amd64.deb
+sudo wget https://repo.mongodb.org/apt/debian/dists/bullseye/mongodb-org/4.4/main/binary-amd64/mongodb-org-server_4.4.30_amd64.deb
+sudo wget https://repo.mongodb.org/apt/debian/dists/bullseye/mongodb-org/4.4/main/binary-amd64/mongodb-org-mongos_4.4.30_amd64.deb
+sudo wget https://repo.mongodb.org/apt/debian/dists/bullseye/mongodb-org/4.4/main/binary-amd64/mongodb-org-shell_4.4.30_amd64.deb
+sudo wget https://repo.mongodb.org/apt/debian/dists/bullseye/mongodb-org/4.4/main/binary-amd64/mongodb-org-database-tools-extra_4.4.30_amd64.deb
 ```
 
----
-
-## Portas importantes
-
-Verifique o firewall, roteamento e regras locais antes de acessar ou integrar o ambiente.
-
-Portas principais:
-- `9000` — interface web e API do Graylog
-- `9200` — OpenSearch
-- `27017` — MongoDB
-
-Portas comuns de entrada de logs:
-- `1514` — Syslog
-- `12201` — GELF
-- `5044` — Beats, caso seja configurado depois
-
----
-
-## Validação rápida
-
-Após a instalação, você pode validar os serviços com:
-
-### Versão sem AVX
+### 3.3. Instalar os pacotes
 
 ```bash
-systemctl status mongod-graylog
-systemctl status opensearch-graylog
-systemctl status graylog-tarball
-ss -ltnp | grep 9000
+cd /srv/mongodb-debs
+
+sudo dpkg -i libssl1.1_1.1.1n-0+deb11u5_amd64.deb
+sudo dpkg -i mongodb-org-server_4.4.30_amd64.deb mongodb-org-mongos_4.4.30_amd64.deb mongodb-org-shell_4.4.30_amd64.deb mongodb-org-database-tools-extra_4.4.30_amd64.deb || sudo apt-get install -f -y
 ```
 
-### Versão com AVX
+### 3.4. Habilitar e testar o MongoDB
 
 ```bash
-systemctl status mongod-graylog-avx
-systemctl status opensearch-graylog-avx
-systemctl status graylog-avx
-ss -ltnp | grep 9000
+sudo systemctl daemon-reload
+sudo systemctl enable --now mongod
+sleep 5
+mongo --eval "db.adminCommand({serverStatus:1}).version"
 ```
+
+Se aparecer `MongoDB server version: 4.4.30` e, na última linha, `4.4.30`, o MongoDB está OK.
 
 ---
 
-## Acesso ao Graylog
+## 4. Instalar Elasticsearch 7.10.2
 
-Depois que a instalação terminar, abra no navegador:
+O Graylog 4.3 funciona bem com Elasticsearch 7.10.x.
+
+### 4.1. Adicionar repositório da Elastic
 
 ```bash
-http://IP_DO_SERVIDOR:9000
+wget -qO - https://artifacts.elastic.co/GPG-KEY-elasticsearch | sudo gpg --dearmor -o /usr/share/keyrings/elasticsearch-keyring.gpg
+
+echo "deb [signed-by=/usr/share/keyrings/elasticsearch-keyring.gpg] https://artifacts.elastic.co/packages/7.x/apt stable main" | sudo tee /etc/apt/sources.list.d/elasticsearch-7.x.list
+
+sudo apt-get update
 ```
 
-Usuário inicial:
+### 4.2. Instalar Elasticsearch
 
-```text
-admin
+```bash
+sudo apt-get install -y elasticsearch=7.10.2
 ```
 
-A senha inicial será exibida no final da execução do script.
+### 4.3. Configurar Elasticsearch para Graylog
+
+Editar o arquivo de configuração:
+
+```bash
+sudo nano /etc/elasticsearch/elasticsearch.yml
+```
+
+Conteúdo mínimo recomendado (adicione/ajuste estas linhas):
+
+```yaml
+cluster.name: graylog
+node.name: integrador2026
+path.data: /var/lib/elasticsearch
+path.logs: /var/log/elasticsearch
+
+network.host: 0.0.0.0
+http.port: 9200
+
+discovery.type: single-node
+```
+
+Salvar e sair (`Ctrl+O`, Enter, `Ctrl+X`).
+
+### 4.4. Habilitar e testar Elasticsearch
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now elasticsearch
+sleep 15
+curl -s http://localhost:9200
+```
+
+A saída deve mostrar versão `7.10.2` e `cluster_name` igual a `graylog`.
 
 ---
 
-## Observações
+## 5. Instalar Graylog 4.3.15
 
-- A versão sem AVX foi criada para contornar a limitação de CPUs que não suportam MongoDB 5+
-- A instalação via tarball foi adotada para reduzir dependência de repositórios `apt`
-- O projeto foi pensado para laboratório, testes e documentação acadêmica
-- Recomenda-se criar snapshot da VM antes de mudanças maiores
+O repositório oficial Graylog usa assinatura antiga (SHA1), então vamos marcar como confiável especificamente para este uso.
+
+### 5.1. Adicionar repositório Graylog 4.3
+
+```bash
+wget -qO /tmp/graylog-4.3-repository_latest.deb https://packages.graylog2.org/repo/packages/graylog-4.3-repository_latest.deb
+sudo dpkg -i /tmp/graylog-4.3-repository_latest.deb
+```
+
+Se der erro de assinatura SHA1, vamos forçar o repositório como confiável:
+
+```bash
+echo "deb [trusted=yes] https://packages.graylog2.org/repo/debian/ stable 4.3" | sudo tee /etc/apt/sources.list.d/graylog.list
+sudo apt-get update
+```
+
+### 5.2. Instalar Graylog Server
+
+```bash
+sudo apt-get install -y graylog-server
+```
+
+Ao final, o instalador avisa que o serviço **não inicia automaticamente**.
 
 ---
 
-## Finalidade acadêmica
+## 6. Configurar o Graylog
 
-Este material foi preparado como apoio ao **Projeto Integrador IFRN-PAR**, com foco em automação, padronização, documentação e reprodutibilidade da instalação do Graylog em Debian.
+Arquivo principal: `/etc/graylog/server/server.conf`
+
+### 6.1. Definir senha do usuário admin
+
+A senha será: `integrador2026`.
+
+Gerar o hash SHA256:
+
+```bash
+echo -n "integrador2026" | sha256sum | awk '{print $1}'
+```
+
+Copie o hash retornado (uma sequência grande de números/letras).
+
+### 6.2. Gerar password_secret
+
+```bash
+sudo apt-get install -y pwgen
+pwgen -N 1 -s 96
+```
+
+Copie a sequência gerada (grande, aleatória).
+
+### 6.3. Editar o arquivo server.conf
+
+Abra:
+
+```bash
+sudo nano /etc/graylog/server/server.conf
+```
+
+Procure e ajuste estas linhas (adicione se não existirem):
+
+```ini
+# segredo aleatório (password_secret)
+password_secret = COLE_AQUI_O_VALOR_DO_PWGEN
+
+# hash da senha do usuário admin (root_password_sha2)
+root_password_sha2 = COLE_AQUI_O_HASH_DO_SHA256_DA_SENHA
+
+# MongoDB
+mongodb_uri = mongodb://localhost/graylog
+
+# Elasticsearch
+elasticsearch_hosts = http://localhost:9200
+
+# Interface web – ouvir em todas as interfaces, porta 9000
+http_bind_address = 0.0.0.0:9000
+
+# URL que os clientes usam para acessar (coloque o IP DA VM)
+http_publish_uri = http://IP_DA_VM:9000/
+
+# Journal – reduzir para caber em disco (ex: 1 GB)
+message_journal_max_size = 1gb
+```
+
+Substitua:
+- `COLE_AQUI_O_VALOR_DO_PWGEN` pelo valor gerado pelo `pwgen`.
+- `COLE_AQUI_O_HASH_DO_SHA256_DA_SENHA` pelo hash da senha `integrador2026`.
+- `IP_DA_VM` pelo IP real da VM, por exemplo `192.168.100.2`.
+
+Salvar e sair (`Ctrl+O`, Enter, `Ctrl+X`).
 
 ---
 
-## Licença
+## 7. Iniciar Graylog e testar
 
-Este projeto está licenciado sob a licença MIT.
+### 7.1. Habilitar o serviço na inicialização
 
-Você pode usar, copiar, modificar e distribuir este projeto, desde que mantenha o aviso de copyright e o texto da licença.
+```bash
+sudo systemctl enable --now graylog-server
+```
 
-Para mais detalhes, consulte o arquivo [LICENSE](./LICENSE).
+Espere um pouco (30–40 segundos) e teste:
 
-## contribuições é sempre bem-vindas
+```bash
+sleep 30
+curl -s -o /dev/null -w "%{http_code}" http://localhost:9000/api/system/lbstatus
+```
+
+Se retornar `200`, o Graylog está ok.
+
+Se retornar `000` ou erro, ver log:
+
+```bash
+sudo journalctl -eu graylog-server --no-pager | tail -40
+```
+
+Erros comuns:
+- Falta de espaço para o journal: ajustar `message_journal_max_size` para valor menor.
+- Erro de conexão com Elasticsearch ou MongoDB: conferir serviços e configurações.
+
+---
+
+## 8. Acessar a interface web
+
+Do seu navegador (no PC da rede do laboratório):
+
+1. Descobrir IP da VM:
+
+   ```bash
+   ip a
+   ```
+
+   Exemplo: `192.168.100.2`.
+
+2. No navegador:
+
+   - URL: `http://192.168.100.2:9000/`  
+   - Usuário: `admin`  
+   - Senha: `integrador2026`
+
+Se não abrir:
+- Verifique se a porta 9000 está ouvindo em todas as interfaces:
+
+  ```bash
+  sudo ss -ltpn | grep 9000
+  ```
+
+  O ideal é ver algo como: `LISTEN *:9000`.
+
+- Verificar se não há firewall bloqueando a porta 9000 (iptables/nftables ou firewall externo).
+
+---
+
+## 9. Próximos passos (para a turma)
+
+Depois de acessar a interface:
+
+- Ajustar o fuso horário do usuário em:  
+  `System -> Users -> admin -> Edit -> Timezone`.
+- Criar um **Input** para receber logs, por exemplo:
+  - `System -> Inputs -> Syslog UDP 514` (pfSense, Mikrotik etc).
+  - `System -> Inputs -> GELF UDP/TCP` (aplicações com agentes).
+- Apontar os dispositivos (roteadores, firewalls, servidores) para enviar logs para o IP da VM do Graylog na porta correta.
+
+---
+
+## 10. Resumo rápido (cola final)
+
+Para quem quiser a “cola seca” depois de entender:
+
+```bash
+# Atualizar sistema
+sudo apt-get update && sudo apt-get upgrade -y
+
+# MongoDB 4.4
+sudo mkdir -p /srv/mongodb-debs && cd /srv/mongodb-debs
+# (baixar os 5 .deb do MongoDB 4.4 – ver seção 3.2)
+sudo dpkg -i libssl1.1_*.deb
+sudo dpkg -i mongodb-org-*_4.4.30_amd64.deb || sudo apt-get install -f -y
+sudo systemctl enable --now mongod
+
+# Elasticsearch 7.10.2
+wget -qO - https://artifacts.elastic.co/GPG-KEY-elasticsearch | sudo gpg --dearmor -o /usr/share/keyrings/elasticsearch-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/elasticsearch-keyring.gpg] https://artifacts.elastic.co/packages/7.x/apt stable main" | sudo tee /etc/apt/sources.list.d/elasticsearch-7.x.list
+sudo apt-get update
+sudo apt-get install -y elasticsearch=7.10.2
+sudo systemctl enable --now elasticsearch
+
+# Graylog 4.3
+wget -qO /tmp/graylog-4.3-repository_latest.deb https://packages.graylog2.org/repo/packages/graylog-4.3-repository_latest.deb
+sudo dpkg -i /tmp/graylog-4.3-repository_latest.deb
+echo "deb [trusted=yes] https://packages.graylog2.org/repo/debian/ stable 4.3" | sudo tee /etc/apt/sources.list.d/graylog.list
+sudo apt-get update
+sudo apt-get install -y graylog-server
+
+# Configurar /etc/graylog/server/server.conf
+# (password_secret com pwgen, root_password_sha2 com echo -n "integrador2026" | sha256sum)
+# http_bind_address = 0.0.0.0:9000
+# http_publish_uri = http://IP_DA_VM:9000/
+# message_journal_max_size = 1gb
+
+# Iniciar Graylog
+sudo systemctl enable --now graylog-server
+sleep 30
+curl -s -o /dev/null -w "%{http_code}" http://localhost:9000/api/system/lbstatus
+```
+
+---
+
+Se você quiser, no próximo passo a gente transforma esse README em um `install_graylog4.sh` automático, seguindo exatamente esta sequência para a VM do IFRN.  
+Você prefere que esse script seja bem verboso (ecoando cada etapa) ou mais enxuto para ficar fácil de ler na aula?  
