@@ -361,6 +361,3 @@ curl -s -o /dev/null -w "%{http_code}" http://localhost:9000/api/system/lbstatus
 ```
 
 ---
-
-Se você quiser, no próximo passo a gente transforma esse README em um `install_graylog4.sh` automático, seguindo exatamente esta sequência para a VM do IFRN.  
-Você prefere que esse script seja bem verboso (ecoando cada etapa) ou mais enxuto para ficar fácil de ler na aula?  
