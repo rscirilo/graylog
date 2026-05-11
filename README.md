@@ -363,6 +363,7 @@ curl -s -o /dev/null -w "%{http_code}" http://localhost:9000/api/system/lbstatus
 ```
 
 ## Instalação rápida com script
+### Para quem não gosta de lê, só faça esse passo abaixo de você não fez os passos acima
 
 Na VM Debian 13 (Trixie):
 
